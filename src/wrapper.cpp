@@ -28,9 +28,9 @@ private:
 PYBIND11_MODULE(pyayay, m) {
     m.doc() = "Python bindings for Ayumi sound chip emulator";
 
-    py::enum_<AYInterface::Enum>(m, "ChipType")
-        .value("AY", AYInterface::AY, "AY-3-8910")
-        .value("YM", AYInterface::YM, "YM2149")
+    py::enum_<AYInterface::TypeEnum::Enum>(m, "ChipType")
+        .value("AY", AYInterface::TypeEnum::AY, "AY-3-8910")
+        .value("YM", AYInterface::TypeEnum::YM, "YM2149")
         .export_values();
 
     py::enum_<AYInterface::EnvShapeEnum::Enum>(m, "EnvShape")
@@ -58,13 +58,13 @@ PYBIND11_MODULE(pyayay, m) {
         ;
 
     py::class_<AyumiEmulator>(m, "Ayumi")
-        .def_property_readonly_static("AY", [](py::object) { return AYInterface::AY; })
-        .def_property_readonly_static("YM", [](py::object) { return AYInterface::YM; })
+        .def_property_readonly_static("AY", [](py::object) { return AYInterface::TypeEnum::AY; })
+        .def_property_readonly_static("YM", [](py::object) { return AYInterface::TypeEnum::YM; })
 
-        .def(py::init<int, double, AYInterface::Enum>(),
+        .def(py::init<int, double, AYInterface::TypeEnum::Enum>(),
              py::arg("sample_rate") = 44100,
              py::arg("clock") = 1773400,
-             py::arg("type") = AYInterface::AY
+             py::arg("type") = AYInterface::TypeEnum::AY
         )
         .def_property_readonly("R", [](AyumiEmulator& AY) { return RegisterWrapper(AY); },
               py::return_value_policy::reference_internal)
@@ -205,12 +205,12 @@ PYBIND11_MODULE(pyayay, m) {
             AY.processBlock(outLeftPtr, outRightPtr, samples, stride, remove_dc);
         }, py::arg("out_left"), py::arg("out_right"), py::arg("samples"), py::arg("remove_dc") = true)
 
-        .def("reset", [](AyumiEmulator& AY, int sampleRate, double clock, AYInterface::Enum type) {
+        .def("reset", [](AyumiEmulator& AY, int sampleRate, double clock, AYInterface::TypeEnum::Enum type) {
             AY.Reset(sampleRate, clock, type);
             },
             py::arg("sample_rate") = 44100,
             py::arg("clock") = 1773400.0,
-            py::arg("type") = AYInterface::AY
+            py::arg("type") = AYInterface::TypeEnum::AY
         )
         .def("can_change_clock", &AyumiEmulator::canChangeClock)
         .def("can_change_clock_continously", &AyumiEmulator::canChangeClockContinously)
@@ -218,11 +218,11 @@ PYBIND11_MODULE(pyayay, m) {
         .def("set_sample_rate", &AyumiEmulator::setSampleRate, py::arg("sampleRate"))
         .def("get_sample_rate", &AyumiEmulator::getSampleRate)
 
-        .def("set_type", [](AyumiEmulator& AY, AYInterface::Enum type) {
+        .def("set_type", [](AyumiEmulator& AY, AYInterface::TypeEnum::Enum type) {
             AY.setType(type);
         }, py::arg("type"))
         .def("get_type", [](AyumiEmulator& AY) {
-            return static_cast<AYInterface::Enum>(AY.getType()); })
+            return static_cast<AYInterface::TypeEnum::Enum>(AY.getType()); })
 
         .def("get_clock", &AyumiEmulator::getClock)
         .def("set_clock", &AyumiEmulator::setClock, py::arg("rate"))

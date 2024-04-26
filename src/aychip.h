@@ -29,12 +29,11 @@ namespace {
 
 class AYInterface {
 public:
-    enum Enum {
-        AY,
-        YM
-    };
     struct TypeEnum {
-        using Enum = Enum;
+        enum Enum {
+            AY,
+            YM
+        };
         static inline constexpr std::string_view labels[] {
             "AY",
             "YM"
@@ -215,9 +214,9 @@ public:
 
 class AyumiEmulator : public AYInterface {
 public:
-    AyumiEmulator(int sampleRate = 44100, double clock = 2000000, ChipType type = AY);
+    AyumiEmulator(int sampleRate = 44100, double clock = 2000000, ChipType type = TypeEnum::YM);
     ~AyumiEmulator() override;
-    auto Reset(int sampleRate = 44100, double clock = 2000000, ChipType type = AY) -> void;
+    auto Reset(int sampleRate = 44100, double clock = 2000000, ChipType type = TypeEnum::YM) -> void;
 
     auto canChangeClock() const -> bool override;
     auto canChangeClockContinously() const -> bool override;
