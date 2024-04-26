@@ -1,0 +1,23 @@
+[project]
+name = "pyayay"
+authors = [
+  { name="Ruslan Grohovecki", email="ruslan.gr@gmail.com" },
+  { name="Peter Sovietov", email="peter@sovietov.com" },
+]
+description = "PyAYay is a Python extension wrapper for AY-3-8910 sound chip emulator"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/ruguevara/pyayay"
+Issues = "https://github.com/ruguevara/pyayay/issues"
+
+[build-system]
+requires = ["setuptools>=42", "wheel", "pybind11"]
+build-backend = "setuptools.build_meta"
