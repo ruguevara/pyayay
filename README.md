@@ -1,6 +1,6 @@
-# PyAyAy
+# PyAYay
 
-PyAyAy is a Python wrapper for the AY/YM sound chip emulator. Currently it supports only the Ayumi emulator by Peter Sovietov.
+PyAYay is a Python wrapper for the AY/YM sound chip emulator. Currently it supports only the Ayumi emulator by Peter Sovietov.
 
 ## Installation
 

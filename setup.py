@@ -14,7 +14,6 @@ ext_modules = [
 
 setup(
     name="pyayay",
-    version="0.1.0",
     author="Ruslan Grohovecki",
     author_email="ruslan.gr@gmail.com",
     description="PyAYay is a Python extension wrapper for AY-3-8910 sound chip emulator",
