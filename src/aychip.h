@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include <array>
 
 #include "utils/tools.h"
 

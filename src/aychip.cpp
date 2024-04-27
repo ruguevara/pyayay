@@ -154,8 +154,8 @@ auto AyumiEmulator::processBlock(float* outLeft, float* outRight, size_t numSamp
         if (removeDC) {
             ayumi_remove_dc(&Ayumi_);
         }
-        *outLeft = Ayumi_.left * MasterVolume_;
-        *outRight = Ayumi_.right * MasterVolume_;
+        *outLeft = static_cast<float>(Ayumi_.left) * MasterVolume_;
+        *outRight = static_cast<float>(Ayumi_.right) * MasterVolume_;
     }
 }
 
