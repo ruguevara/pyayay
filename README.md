@@ -11,7 +11,7 @@ PyAYay is a Python wrapper for the AY/YM sound chip emulator. Currently it suppo
 
 ## Installation
 
-## From PyPI
+### From PyPI
 
 You can install the package from PyPI:
 
@@ -21,7 +21,7 @@ pip install pyayay
 
 Yep, that's it!
 
-## From source
+### From source
 
 ```bash
 git clone https://github.com/ruguevara/pyayay.git
