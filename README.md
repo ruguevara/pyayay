@@ -1,10 +1,27 @@
+
+| |
+|-|
+| ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/ruguevara/pyayay/python-package.yml?style=flat&logo=github&label=tests) ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/ruguevara/pyayay/cibuildwheel.yml?style=flat&logo=github) ![PyPI - License](https://img.shields.io/pypi/l/pyayay)|
+| ![PyPI](https://img.shields.io/pypi/v/pyayay?logo=python&logoColor=white) ![Python Version from PEP 621 TOML](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Fruguevara%2Fpyayay%2Fmain%2Fpyproject.toml&logo=python&logoColor=white) ![PyPI - Wheel](https://img.shields.io/pypi/wheel/pyayay?logo=python&logoColor=white) |
+
+
 # PyAYay
 
 PyAYay is a Python wrapper for the AY/YM sound chip emulator. Currently it supports only the Ayumi emulator by Peter Sovietov.
 
 ## Installation
 
-The package is not yet available on PyPi, so you need to install it from the source.
+## From PyPI
+
+You can install the package from PyPI:
+
+```bash
+pip install pyayay
+```
+
+Yep, that's it!
+
+## From source
 
 ```bash
 git clone https://github.com/ruguevara/pyayay.git
