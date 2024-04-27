@@ -7,7 +7,7 @@
 
 # PyAYay
 
-PyAYay is a Python wrapper for the AY/YM sound chip emulator. Currently it supports only the Ayumi emulator by Peter Sovietov.
+PyAYay is a Python wrapper for the AY/YM sound chip emulator. Currently it supports only the [Ayumi](https://github.com/true-grue/ayumi) emulator by Peter Sovietov.
 
 ## Installation
 
@@ -120,8 +120,8 @@ data = np.array([
     [249,   0, 148,   0,  40,   1,   3,  40,  13,  29,  13,  74,   0, 12],
     [249,   0, 158,   4,  40,   1,   3,  56,  13,  15,  13,  74,   0, 12]], dtype=np.uint8)
 mask = np.array([
-    [False,  True, False,  True, False, False, False, False, False, False, False, False,  True, False],
-    [ True,  True, False, False,  True,  True,  True, False,  True, False,  True,  True,  True,  True]])
+    [0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+    [1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1]], dtype=bool)
 fps = 50
 ay.render_psg(data, mask, outLeft, outRight, fps)
 ```
