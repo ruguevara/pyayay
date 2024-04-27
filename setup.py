@@ -12,12 +12,6 @@ ext_modules = [
     ),
 ]
 
-def no_dev_version(version):
-    if version.exact and not version.distance:
-        return ""
-    else:
-        return version.format_choice("+{node}", "+{node}.dirty")
-
 setup(
     name="pyayay",
     author="Ruslan Grohovecki",
@@ -28,9 +22,5 @@ setup(
     cmdclass={"build_ext": build_ext},
     zip_safe=False,
     python_requires=">=3.8",
-    use_scm_version={
-        "local_scheme": no_dev_version,
-        "write_to": "version.txt",
-    },
     setup_requires=["setuptools_scm"],
 )
