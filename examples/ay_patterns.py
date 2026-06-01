@@ -265,6 +265,51 @@ class Pattern:
                                            vib_depth=float(depth_semitones),
                                            vib_rate=float(rate_hz)))
 
+    # -- envelopes (tracker "samples", Strudel-faithful) -------------------
+
+    def _patch_vol_env(self, **kw) -> "Pattern":
+        def f(v):
+            n = _as_note(v)
+            base = n.vol_env or ADSR()
+            return replace(n, vol_env=replace(base, **kw))
+        return self.fmap(f)
+
+    def attack(self, seconds: float) -> "Pattern":
+        return self._patch_vol_env(a=float(seconds))
+
+    def decay(self, seconds: float) -> "Pattern":
+        return self._patch_vol_env(d=float(seconds))
+
+    def sustain(self, level: float) -> "Pattern":
+        """Sustain *level* in 0..1 (Strudel semantics -- not a duration)."""
+        return self._patch_vol_env(s=float(level))
+
+    def release(self, seconds: float) -> "Pattern":
+        return self._patch_vol_env(r=float(seconds))
+
+    def adsr(self, spec) -> "Pattern":
+        """Set the amplitude ADSR from a Strudel ``"a:d:s:r"`` string or ADSR."""
+        env = ADSR.parse(spec)
+        return self.fmap(lambda x: replace(_as_note(x), vol_env=env))
+
+    def penv(self, spec, peak: float = 12.0) -> "Pattern":
+        """Set a *pitch* envelope (``peak`` semitones high).  ``spec`` is an
+        ``"a:d:s:r"`` string or :class:`ADSR`; the sustain level scales the held
+        pitch offset.  A short decay with ``s=0`` is the classic tracker
+        pitch-blip on the note's attack."""
+        env = ADSR.parse(spec, peak=peak)
+        return self.fmap(lambda x: replace(_as_note(x), pitch_env=env))
+
+    def ornament(self, *offsets) -> "Pattern":
+        """Attach an AY-tracker *ornament*: a looping per-frame list of semitone
+        offsets (``ornament(0, 4, 7)`` fakes a major chord on one channel -- the
+        hardware-arpeggio trick materialised as a table rather than via
+        ``.arp().fast()``)."""
+        if len(offsets) == 1 and isinstance(offsets[0], (list, tuple)):
+            offsets = tuple(offsets[0])
+        orn = tuple(int(o) for o in offsets)
+        return self.fmap(lambda x: replace(_as_note(x), ornament=orn))
+
     # -- structure ---------------------------------------------------------
 
     def struct(self, pattern_str: str) -> "Pattern":
@@ -569,6 +614,96 @@ def note_to_midi_freq(freq: float) -> float:
     return A4_MIDI + 12.0 * math.log2(freq / A4_FREQ)
 
 
+# ---------------------------------------------------------------------------
+# ADSR envelopes (tracker "samples", Strudel-faithful timing)
+#
+# We follow Strudel's envelope model exactly: attack / decay / release are
+# *durations in seconds*, sustain is a *level* (not a time), and the whole
+# thing is gated by the note's own duration -- attack/decay/sustain run while
+# the note is held; release begins at note-off.  This is the "instrument /
+# sample" of a tracker, but with Strudel's seconds-and-level semantics rather
+# than per-row ticks, so it stays tempo-independent and composes with the rest
+# of the pattern algebra.
+#
+# An ADSR is reused for two jobs:
+#   * volume  -- ``level`` runs 0..1, scaled onto the 0..15 amplitude;
+#   * pitch   -- ``level`` runs 0..1, scaled by ``peak`` semitones and *added*
+#                to the note (a "blip"/sweep; sustain 0 + short decay = a
+#                classic tracker pitch-blip on the attack).
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ADSR:
+    """A Strudel-style ADSR envelope.
+
+    Parameters
+    ----------
+    a, d, r : float       attack / decay / release **durations in seconds**.
+    s : float             **sustain level** in 0..1 (held, not a duration).
+    peak : float          the value the envelope reaches at the end of attack;
+                          defaults to 1.0.  For a pitch envelope this is the
+                          attack height in *semitones* (e.g. ``peak=12`` for an
+                          octave blip); ``s`` then scales the sustained offset.
+
+    The envelope is evaluated with :meth:`at`, given seconds-into-note and the
+    note's total duration; it returns a value in ``[0, peak]``.
+    """
+
+    a: float = 0.0
+    d: float = 0.0
+    s: float = 1.0
+    r: float = 0.0
+    peak: float = 1.0
+
+    def at(self, t_in: float, dur: float) -> float:
+        """Envelope value at ``t_in`` seconds into a note of length ``dur``.
+
+        Attack -> decay -> sustain plays over ``[0, dur)``; the release tail
+        plays over ``[dur, dur + r)``.  Returns a value scaled by ``peak``.
+        """
+        sustain = self.s * self.peak
+        if t_in < 0:
+            return 0.0
+        # release tail (after note-off)
+        if t_in >= dur:
+            if self.r <= 0:
+                return 0.0
+            rt = t_in - dur
+            if rt >= self.r:
+                return 0.0
+            # glide from the level at note-off down to 0
+            level_at_off = self._gated(dur, dur, sustain)
+            return level_at_off * (1.0 - rt / self.r)
+        return self._gated(t_in, dur, sustain)
+
+    def _gated(self, t_in: float, dur: float, sustain: float) -> float:
+        # attack
+        if self.a > 0 and t_in < self.a:
+            return self.peak * (t_in / self.a)
+        # decay
+        td = t_in - self.a
+        if self.d > 0 and td < self.d:
+            return self.peak + (sustain - self.peak) * (td / self.d)
+        # sustain
+        return sustain
+
+    @classmethod
+    def parse(cls, spec, peak: float = 1.0) -> "ADSR":
+        """Parse a Strudel-style ``"a:d:s:r"`` string (or pass an ADSR through).
+
+        Missing trailing fields default to 0 (a/d/r) or 1 (s).
+        """
+        if isinstance(spec, ADSR):
+            return spec
+        parts = [p.strip() for p in str(spec).split(":")]
+        vals = [float(p) if p else None for p in parts]
+        a = vals[0] if len(vals) > 0 and vals[0] is not None else 0.0
+        d = vals[1] if len(vals) > 1 and vals[1] is not None else 0.0
+        s = vals[2] if len(vals) > 2 and vals[2] is not None else 1.0
+        r = vals[3] if len(vals) > 3 and vals[3] is not None else 0.0
+        return cls(a=a, d=d, s=s, r=r, peak=peak)
+
+
 _CHORD_INTERVALS = {
     "maj": (0, 4, 7),
     "min": (0, 3, 7),
@@ -592,6 +727,9 @@ class Note:
     sweep: float = 0.0          # semitones per cycle
     vib_depth: float = 0.0      # semitones
     vib_rate: float = 0.0       # Hz
+    vol_env: Optional["ADSR"] = None    # amplitude envelope (level 0..1)
+    pitch_env: Optional["ADSR"] = None  # pitch envelope (peak in semitones)
+    ornament: Optional[Tuple[int, ...]] = None  # per-frame semitone offsets
 
     def transpose(self, semitones) -> "Note":
         return replace(self, midi=self.midi + semitones)
@@ -772,21 +910,35 @@ class Instrument:
         t_in     : seconds since the note's onset
         dur      : the note's total duration in seconds
         clock    : chip clock in Hz
+        fps      : frames per second (for per-frame ornament stepping)
     """
 
-    def frame_state(self, note: Note, t_in: float, dur: float, clock: float) -> VoiceState:
+    def frame_state(self, note: Note, t_in: float, dur: float, clock: float,
+                    fps: float = 50.0) -> VoiceState:
         raise NotImplementedError
 
-    # shared helper: pitch with sweep + vibrato applied
+    # shared helper: pitch with sweep + vibrato + pitch-env + ornament applied
     @staticmethod
-    def _live_freq(note: Note, t_in: float, dur: float) -> float:
+    def _live_freq(note: Note, t_in: float, dur: float, fps: float = 50.0) -> float:
         midi = note.midi
         if note.sweep:
             # cycles elapsed unknown here; sweep is expressed per *second* of note
             midi += note.sweep * t_in
         if note.vib_depth and note.vib_rate:
             midi += note.vib_depth * math.sin(2 * math.pi * note.vib_rate * t_in)
+        if note.pitch_env is not None:
+            midi += note.pitch_env.at(t_in, dur)
+        if note.ornament:
+            frame = int(round(t_in * fps))
+            midi += note.ornament[frame % len(note.ornament)]
         return midi_to_freq(midi)
+
+    # shared helper: amplitude with the volume ADSR applied (0..15 -> 0..15)
+    @staticmethod
+    def _live_volume(note: Note, base_vol: int, t_in: float, dur: float) -> int:
+        if note.vol_env is None:
+            return base_vol
+        return max(0, min(15, round(base_vol * note.vol_env.at(t_in, dur))))
 
 
 class Tone(Instrument):
@@ -795,9 +947,10 @@ class Tone(Instrument):
     def __init__(self, volume: int = 15):
         self.volume = volume
 
-    def frame_state(self, note, t_in, dur, clock):
-        f = self._live_freq(note, t_in, dur)
+    def frame_state(self, note, t_in, dur, clock, fps=50.0):
+        f = self._live_freq(note, t_in, dur, fps)
         vol = note.volume if note.volume is not None else self.volume
+        vol = self._live_volume(note, vol, t_in, dur)
         return VoiceState(
             tone_on=True,
             tone_period=tone_period_for_freq(f, clock),
@@ -847,8 +1000,8 @@ class Buzzer(Instrument):
         self.env_ratio = env_ratio
         self.tone = tone
 
-    def frame_state(self, note, t_in, dur, clock):
-        f = self._live_freq(note, t_in, dur)
+    def frame_state(self, note, t_in, dur, clock, fps=50.0):
+        f = self._live_freq(note, t_in, dur, fps)
         # the envelope oscillator carries the pitch (optionally detuned)
         env_f = midi_to_freq(note_to_midi_freq(f) + self.detune) * self.env_ratio
         env_p = env_period_for_freq(env_f, clock, ramps_per_cycle=self.ramps)
@@ -903,7 +1056,7 @@ class Percussion(Instrument):
         (self.use_tone, self.np0, self.np1,
          self.decay, self.base_freq) = self._PRESETS[kind]
 
-    def frame_state(self, note, t_in, dur, clock):
+    def frame_state(self, note, t_in, dur, clock, fps=50.0):
         frac = min(1.0, t_in / self.decay) if self.decay > 0 else 1.0
         vol = max(0, round(15 * (1.0 - frac)))
         noise_p = round(self.np0 + (self.np1 - self.np0) * frac)
@@ -920,6 +1073,115 @@ class Percussion(Instrument):
             pan=note.pan if note.pan is not None else 0.5,
             noise_period=max(1, min(31, noise_p)),
         )
+
+
+class Sample(Instrument):
+    """A tracker-style *instrument* ("sample"): tone / noise / envelope flags
+    plus a volume ADSR and an optional pitch ADSR + ornament, all in one struct.
+
+    This is the explicit, tracker-flavoured counterpart to the fluent Strudel
+    envelope transforms (``.attack``/``.decay``/``.sustain``/``.release``).  A
+    ``Sample`` bundles the timbre choice with its envelopes the way a tracker
+    instrument row does -- handy when you want to define an instrument once and
+    reuse it across notes.
+
+    Tone + Noise
+    ------------
+    Set both ``tone=True`` and ``noise=True`` for the classic AY tone+noise
+    timbre (a pitched square with a noise bite -- metallic leads, gritty basses,
+    hand-claps).  ``noise_period`` is fixed by default; pass
+    ``noise_sweep=(start, end)`` to sweep the noise colour across the volume
+    envelope (bright attack -> darker tail), which is how you build snares/zaps.
+
+    Envelope (buzzer) layer
+    -----------------------
+    With ``env=True`` the chip's hardware envelope runs as the buzzer
+    oscillator at the note pitch (see :class:`Buzzer`); the amplitude is then
+    fixed to envelope-mode and the volume ADSR is ignored (the hardware envelope
+    owns the amplitude).  Combine with ``tone``/``noise`` for layered timbres.
+
+    Parameters
+    ----------
+    vol : ADSR | str       amplitude envelope ("a:d:s:r" string accepted).
+    pitch : ADSR | str      optional pitch envelope (``pitch_peak`` semitones).
+    pitch_peak : float      attack height of the pitch envelope, in semitones.
+    ornament : seq[int]     optional per-frame semitone-offset table.
+    tone, noise, env : bool which generators feed the channel.
+    noise_period : int      fixed noise period (1..31) when ``noise=True``.
+    noise_sweep : (int,int)  sweep noise period start->end across the vol env.
+    env_shape : str         buzzer waveform when ``env=True`` ("saw"/"tri"/...).
+    volume : int            base amplitude (0..15) the vol ADSR scales.
+    """
+
+    def __init__(self, vol="0:0:1:0", pitch=None, pitch_peak: float = 12.0,
+                 ornament: Optional[Sequence[int]] = None,
+                 tone: bool = True, noise: bool = False, env: bool = False,
+                 noise_period: int = 8,
+                 noise_sweep: Optional[Tuple[int, int]] = None,
+                 env_shape: str = "saw", volume: int = 15):
+        self.vol_env = ADSR.parse(vol)
+        self.pitch_env = ADSR.parse(pitch, peak=pitch_peak) if pitch is not None else None
+        self.ornament = tuple(int(o) for o in ornament) if ornament else None
+        self.tone = tone
+        self.noise = noise
+        self.env = env
+        self.noise_period = noise_period
+        self.noise_sweep = noise_sweep
+        self.env_shape = env_shape
+        self.shape_enum, self.ramps = Buzzer._SHAPES[env_shape]
+        self.volume = volume
+
+    def frame_state(self, note, t_in, dur, clock, fps=50.0):
+        # let the note carry the instrument's envelopes/ornament if it has none
+        # of its own, so both the fluent and the struct APIs land in _live_freq.
+        n = note
+        if n.vol_env is None and self.vol_env is not None:
+            n = replace(n, vol_env=self.vol_env)
+        if n.pitch_env is None and self.pitch_env is not None:
+            n = replace(n, pitch_env=self.pitch_env)
+        if n.ornament is None and self.ornament is not None:
+            n = replace(n, ornament=self.ornament)
+
+        f = self._live_freq(n, t_in, dur, fps)
+        tone_p = tone_period_for_freq(f, clock)
+
+        # noise period: fixed, or swept across the volume envelope's progress
+        noise_p = self.noise_period
+        if self.noise_sweep is not None:
+            frac = self.vol_env.at(t_in, dur) / max(self.vol_env.peak, 1e-9)
+            n0, n1 = self.noise_sweep
+            noise_p = round(n0 + (n1 - n0) * (1.0 - frac))
+
+        if self.env:
+            # hardware envelope owns the amplitude (buzzer mode)
+            env_f = midi_to_freq(note_to_midi_freq(f)) * 1.0
+            env_p = env_period_for_freq(env_f, clock, ramps_per_cycle=self.ramps)
+            return VoiceState(
+                tone_on=self.tone, noise_on=self.noise, env_on=True,
+                tone_period=tone_p, volume=16,
+                pan=note.pan if note.pan is not None else 0.5,
+                env_period=env_p, env_shape=int(self.shape_enum),
+                noise_period=max(1, min(31, noise_p)) if self.noise else None,
+            )
+
+        base_vol = note.volume if note.volume is not None else self.volume
+        if base_vol >= 16:           # explicit env-mode request from the note
+            base_vol = self.volume
+        vol = self._live_volume(n, base_vol, t_in, dur)
+        return VoiceState(
+            tone_on=self.tone, noise_on=self.noise,
+            tone_period=tone_p, volume=vol,
+            pan=note.pan if note.pan is not None else 0.5,
+            noise_period=max(1, min(31, noise_p)) if self.noise else None,
+        )
+
+
+def tone_noise(noise_period: int = 8, vol="0:0:1:0", **kw) -> Sample:
+    """A tone+noise instrument: a pitched square with a noise bite mixed in.
+
+    The AY's classic "two generators on one channel" timbre -- metallic leads,
+    gritty chip-basses, hand-claps.  Sweep the colour with ``noise_sweep``."""
+    return Sample(tone=True, noise=True, noise_period=noise_period, vol=vol, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -1008,7 +1270,7 @@ def _render_grid(
             now_sec = fi * sec_per_frame
             t_in = max(0.0, now_sec - onset_sec)
             dur = float(whole.end - whole.begin) * frames_per_cycle * sec_per_frame
-            state = note.instrument.frame_state(note, t_in, dur, clock)
+            state = note.instrument.frame_state(note, t_in, dur, clock, fps)
             frame_voices.append((note.midi, state))
 
         # voice allocation onto <=3 channels

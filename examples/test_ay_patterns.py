@@ -16,8 +16,8 @@ import pytest
 
 import ay_patterns as ap
 from ay_patterns import (
-    Buzzer, Percussion, Tone,
-    Span, arrange, at, chord, note, render, s, stack, cat, window,
+    ADSR, Buzzer, Percussion, Sample, Tone,
+    Span, arrange, at, chord, note, render, s, stack, cat, window, tone_noise,
 )
 
 
@@ -319,6 +319,126 @@ def test_bpm_vs_cps_consistent():
     psg_cps, _, _ = render(p, cps=0.5, seconds=2, fps=50)
     assert psg_bpm.shape == psg_cps.shape
     assert np.array_equal(psg_bpm, psg_cps)
+
+
+# -- ADSR envelopes / tracker "samples" -------------------------------------
+
+def _period(psg, frame, ch=0):
+    """Reconstruct a 12-bit tone period (avoiding uint8 overflow on the shift)."""
+    return int(psg[frame, ch * 2]) | (int(psg[frame, ch * 2 + 1]) << 8)
+
+
+def test_adsr_stages():
+    # A/D/R are seconds, S is a level (Strudel semantics).
+    e = ADSR(a=0.1, d=0.2, s=0.5, r=0.1, peak=1.0)
+    assert e.at(0.0, 1.0) == pytest.approx(0.0)     # attack start
+    assert e.at(0.05, 1.0) == pytest.approx(0.5)    # half-way up the attack
+    assert e.at(0.1, 1.0) == pytest.approx(1.0)     # peak
+    assert e.at(0.2, 1.0) == pytest.approx(0.75)    # half-way through decay
+    assert e.at(0.5, 1.0) == pytest.approx(0.5)     # sustain level
+    # release runs *after* note-off (dur), gliding the sustain level to 0
+    assert e.at(1.0, 1.0) == pytest.approx(0.5)     # at note-off
+    assert e.at(1.05, 1.0) == pytest.approx(0.25)   # half through release
+    assert e.at(1.2, 1.0) == pytest.approx(0.0)     # fully released
+
+
+def test_adsr_parse():
+    e = ADSR.parse("0:0.16:0.3:0.1")
+    assert (e.a, e.d, e.s, e.r) == (0.0, 0.16, 0.3, 0.1)
+    # peak carries through for pitch envelopes
+    p = ADSR.parse("0:0.1:0:0", peak=12)
+    assert p.peak == 12 and p.at(0.0, 1.0) == pytest.approx(12.0)
+    # passing an ADSR through is a no-op
+    assert ADSR.parse(e) is e
+
+
+def test_volume_adsr_decays_amplitude():
+    # decay to silence over 0.3 s: R8 amplitude must fall across the note
+    p = note("c4").s(Tone()).vol(15).adsr("0:0.3:0:0")
+    psg, _, _ = render(p, bpm=120, seconds=1, fps=50)
+    amp = psg[:, 8] & 0x0F
+    assert amp[0] > amp[8] > amp[15]
+    assert amp[15] == 0
+
+
+def test_fluent_adsr_matches_struct():
+    # the fluent .attack/.decay/.sustain/.release build the same vol env a
+    # Sample carries, so both APIs produce the same amplitude curve.
+    fluent = note("c4").s(Tone()).vol(15).attack(0.0).decay(0.2).sustain(0.25).release(0.0)
+    struct = note("c4").s(Sample(vol="0:0.2:0.25:0", volume=15))
+    pf, _, _ = render(fluent, seconds=1, fps=50)
+    ps, _, _ = render(struct, seconds=1, fps=50)
+    assert np.array_equal(pf[:, 8] & 0x0F, ps[:, 8] & 0x0F)
+
+
+def test_pitch_env_blips_then_settles():
+    # +7 st blip decaying over 60 ms: the pitch starts high (short period) and
+    # settles to the note's own period.
+    p = note("c4").s(Tone()).penv("0:0.06:0:0", peak=7)
+    psg, _, _ = render(p, seconds=1, fps=50)
+    assert _period(psg, 0) < _period(psg, 10)        # starts higher pitched
+    settled = _period(psg, 20)
+    plain = _period(render(note("c4").s(Tone()), seconds=1, fps=50)[0], 20)
+    assert settled == plain                          # returns to the base pitch
+
+
+def test_ornament_fakes_a_chord_on_one_channel():
+    # ornament(0,4,7) cycles three pitches per frame -> three distinct periods
+    p = note("c4").s(Tone()).ornament(0, 4, 7)
+    psg, _, _ = render(p, seconds=1, fps=50)
+    periods = {_period(psg, i) for i in range(3, 15)}
+    assert len(periods) == 3
+
+
+def test_tone_noise_enables_both_generators():
+    p = note("a3").s(tone_noise(noise_period=5))
+    psg, _, _ = render(p, seconds=1, fps=50)
+    mix = int(psg[5, 7])
+    assert not (mix & 0b001)      # tone A enabled (active low)
+    assert not (mix & 0b1000)     # noise A enabled
+    assert int(psg[5, 6]) == 5    # noise period honoured
+
+
+def test_noise_sweep_changes_noise_period():
+    # noise colour swept across the volume envelope's decay
+    p = note("c3").s(tone_noise(noise_period=4, vol="0:0.2:0:0", noise_sweep=(2, 20)))
+    psg, _, _ = render(p, seconds=1, fps=50)
+    early = int(psg[1, 6])
+    late = int(psg[9, 6])
+    assert early != late          # the noise period moves
+
+
+def test_sample_env_mode_runs_the_buzzer():
+    # a Sample with env=True drives the hardware envelope (buzzer), not the
+    # volume ADSR: R8 shows the env-mode flag and R13 the saw shape.
+    p = note("c2").s(Sample(tone=False, env=True, env_shape="saw"))
+    psg, _, _ = render(p, seconds=1, fps=50)
+    assert int(psg[5, 8]) == 0x10
+    assert int(psg[5, 13]) == int(Buzzer._SHAPES["saw"][0])
+
+
+def test_sample_instruments_reach_every_trick():
+    """A stack of the new Sample instruments renders cleanly and reaches every
+    AY trick at once: amplitude ADSRs, tone+noise, and the hardware buzzer.
+
+    (Self-contained -- it does not depend on which layers the demo track happens
+    to have enabled.)"""
+    song = stack(
+        note("c2 ~ c2 g1").s(Buzzer(shape="saw")).vol(16),       # buzzer env
+        note("c4 e4 g4 e4").s(Tone()).adsr("0:0.12:0.3:0.05"),   # vol ADSR
+        note("a3 ~ a3 ~").s(tone_noise(noise_period=5,
+                                       vol="0:0.1:0:0",
+                                       noise_sweep=(2, 18))),     # tone+noise
+    )
+    psg, L, R = render(song, bpm=125, seconds=4)
+    assert np.abs(np.concatenate([L, R])).max() < 0.999      # no clipping
+    assert np.abs(L).mean() > 0.01                           # not silent
+    # amplitude ADSRs vary the R8-R10 levels frame to frame
+    assert (np.diff(psg[:, 8:11].astype(int), axis=0) != 0).any()
+    # noise generator used (tone+noise voice)
+    assert (((psg[:, 7] >> 3) & 0b111) != 0b111).any()
+    # buzzer env-mode reached (R8-R10 bit-4 flag)
+    assert ((psg[:, 8:11] & 0x10) != 0).any()
 
 
 # -- megademo integration ---------------------------------------------------

@@ -16,6 +16,13 @@ the odd acid-glitch fill.  Structure:
 Three channels only (it's an AY!), so chords are faked with fast arpeggios and
 the bass leans on the envelope "buzzer" for body.
 
+The melodic/harmonic voices are tracker-style ``Sample`` instruments (see
+``ay_patterns``): each bundles its timbre with a Strudel-faithful ADSR so notes
+pluck, swell, ring and bite instead of holding a flat square -- a singing LEAD
+(with an attack pitch-blip), a percussive PLUCK, a tone+noise STAB, a ringing
+BELL and a tone+noise SNARE.  The basses stay on the pure-envelope buzzer, kept
+in a low octave so the envelope period is large and the pitch stays in tune.
+
 Run it:
     python ay_megademo.py                 # -> crystal_decline.wav + report
     python ay_megademo.py out.wav
@@ -29,8 +36,8 @@ import sys
 import numpy as np
 
 from ay_patterns import (
-    Buzzer, Percussion, Tone,
-    arrange, at, buzz_bass, chord, note, render, s, stack,
+    ADSR, Buzzer, Percussion, Sample,
+    arrange, at, buzz_bass, chord, note, render, s, stack, tone_noise,
 )
 
 
@@ -46,20 +53,48 @@ from ay_patterns import (
 BPM = 138
 BEATS = 4
 
-# Instruments ----------------------------------------------------------------
+# Instruments ("samples") ----------------------------------------------------
 #
-# Buzzers are *pure-envelope* (no square tone) so they sound as clean
-# saw/triangle oscillators rather than a same-frequency tone+envelope mush.
+# The melodic/harmonic voices are tracker-style ``Sample`` instruments: each
+# bundles its timbre with a Strudel-faithful ADSR (A/D/R in seconds, S a level)
+# so notes pluck, swell and ring like a tracker patch rather than holding a flat
+# square.  The basses stay on the AY "buzzer" (the hardware envelope as the
+# pitched oscillator); they are *pure-envelope* (no square tone) and kept in
+# their low octave -- there the envelope period is large, so the pitch is
+# accurate.  (An octave-up envelope has tiny periods and goes audibly sharp; see
+# CLAUDE.md.)
 
 PAD = buzz_bass(shape="tri")          # smooth triangle pad buzzer
 PAD_FIFTH = Buzzer(shape="tri")       # (pure tri; was a "ring" colour)
 BASS = buzz_bass(shape="saw")         # clean, bright saw buzzer bass
-LEAD = Tone(volume=14)
-PLUCK = Tone(volume=13)
+
+# A singing lead: fast attack, a gentle decay to a *high* sustain level so the
+# line carries (this is the melodic voice, not a pluck), and a short release so
+# legato lines don't click.  A tiny up-pitch blip on the attack (penv) gives it
+# the tracker "snap".
+LEAD = Sample(tone=True, vol="0.01:0.08:1.0:0.05",
+              pitch="0:0.04:0:0", pitch_peak=4, volume=15)
+
+# The arp/chord pluck: very fast attack, quick decay to a low sustain so each
+# arpeggio step reads as a distinct pluck rather than a smear.
+PLUCK = Sample(tone=True, vol="0:0.08:0.25:0.04", volume=13)
+
+# A gritty tone+noise stab for accents: pitched square with a noise bite whose
+# colour sweeps bright->dark across the (short) volume decay.
+STAB = tone_noise(noise_period=4, vol="0:0.12:0:0", noise_sweep=(2, 18))
+
+# A ringing bell: struck (instant attack), long decay tail, no sustain -- the
+# tracker "bell sample".
+BELL = Sample(tone=True, vol="0:0.9:0:0", volume=12)
 
 KICK = Percussion("kick")
-SNARE = Percussion("snare")
 HAT = Percussion("hat")
+
+# A snare built as a tone+noise Sample: a noise burst with a tonal "body",
+# decaying fast, the noise colour opening up as it hits.
+SNARE = Sample(tone=True, noise=True, noise_period=6,
+               vol=ADSR(a=0.0, d=0.14, s=0.0, r=0.0),
+               noise_sweep=(3, 20), volume=15)
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +169,8 @@ def intro():
     bell = (
         note("c5 eb5 g4 bb4 ab4 c5 g4 g4")  # one bell tone per bar
         .slow(N_BARS)
-        .s(Tone(volume=10))
-        .vol(10)
+        .s(BELL)                            # struck, long ringing decay
+        .vol(11)
         .pan(0.8)
     )
     return stack(pad, bell)
@@ -177,12 +212,13 @@ def drop():
 
 
 def acid_fill():
-    """A one-bar acid-glitch turnaround: a stuttered, pitch-glitched arp run."""
+    """A one-bar acid-glitch turnaround: a stuttered, pitch-glitched run on the
+    gritty tone+noise STAB, punctuated by tom-like noise hits."""
     glitch = (
         chord("c3:min").arp("up").fast(16)
         .glitch(amount=12, seed=5)
         .stutter(2)
-        .s(Tone(volume=13))
+        .s(STAB)                            # tone+noise: extra grit on the fill
         .vol(13)
         .pan(0.5)
     )
@@ -256,7 +292,7 @@ def outro():
     bell = (
         note("g4 eb4 c4 g4 ab4 c4 c4 c4")  # descending to the tonic
         .slow(N_BARS)
-        .s(Tone(volume=9))
+        .s(BELL)                            # the ringing bell, fading out
         .vol(9)
         .pan(0.7)
     )
