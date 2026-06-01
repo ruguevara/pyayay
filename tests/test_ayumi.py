@@ -54,6 +54,29 @@ def test_process_tone():
     assert np.abs(outLeft).mean() > 0.2
     assert np.abs(outRight).mean() > 0.2
 
+def test_process_tone_no_remove_dc():
+    # Regression: remove_dc=False must fill the whole buffer, not just the
+    # first sample (the stride/remove_dc arguments were once swapped).
+    ay = Ayumi()
+    ay.set_pan(0, 0.5)
+    samples = 44100 * 1
+
+    ay.set_tone_period(0, 100)
+    ay.set_volume(0, 15)
+    ay.set_mixer(0, True, False, False)
+    bypass_initial_click(ay)
+
+    outLeft  = np.zeros(samples, dtype=np.float32)
+    outRight = np.zeros(samples, dtype=np.float32)
+
+    ay.process_block(outLeft, outRight, samples, remove_dc=False)
+
+    # Every sample must be written, not only the first one.
+    assert np.count_nonzero(outLeft) > samples // 2
+    assert np.count_nonzero(outRight) > samples // 2
+    assert np.abs(outLeft).mean() > 0.2
+    assert np.abs(outRight).mean() > 0.2
+
 def test_process_tone_R():
     ay = Ayumi()
     ay.set_pan(0, 0.5)

@@ -171,7 +171,7 @@ PYBIND11_MODULE(pyayay, m) {
                 const size_t sample_begin_frame = std::round(i * samples_per_frame);
                 const size_t sample_end_frame = std::round((i + 1) * samples_per_frame);
                 const size_t samples_to_render = sample_end_frame - sample_begin_frame;
-                AY.processBlock(outLeftPtr, outRightPtr, samples_to_render, stride, remove_dc);
+                AY.processBlock(outLeftPtr, outRightPtr, samples_to_render, remove_dc, stride);
                 outLeftPtr += samples_to_render;
                 outRightPtr += samples_to_render;
             }
@@ -202,7 +202,7 @@ PYBIND11_MODULE(pyayay, m) {
             float* outLeftPtr = static_cast<float*>(outLeftInfo.ptr);
             float* outRightPtr = static_cast<float*>(outRightInfo.ptr);
             const int stride = 1;
-            AY.processBlock(outLeftPtr, outRightPtr, samples, stride, remove_dc);
+            AY.processBlock(outLeftPtr, outRightPtr, samples, remove_dc, stride);
         }, py::arg("out_left"), py::arg("out_right"), py::arg("samples"), py::arg("remove_dc") = true)
 
         .def("reset", [](AyumiEmulator& AY, int sampleRate, double clock, AYInterface::TypeEnum::Enum type) {
