@@ -5,6 +5,12 @@
 
 # # Environments
 .conda/
+.venv/
+venv/
+
+# Rendered audio / analysis output from examples
+*.wav
+examples/*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
