@@ -238,7 +238,9 @@ def test_render_tone_is_audible():
 
 
 def test_buzzer_sets_envelope_registers():
-    p = note("c2").s(Buzzer(shape="saw")).vol(16)
+    # .pan("L") pins the lone voice to channel 0 so we can read its registers
+    # (a centred voice now lands on channel 1; see the pan-bucket channel model).
+    p = note("c2").s(Buzzer(shape="saw")).vol(16).pan("L")
     psg, _, _ = render(p, seconds=1)
     frame = psg[3]  # a settled frame
     assert frame[8] == 0x10           # R8: envelope-mode flag
@@ -272,7 +274,7 @@ def test_render_suppresses_r13_retrigger():
     unchanged -- doing so retriggers the envelope and smears buzzer tones."""
     # build the same mask the renderer builds and confirm a steady buzzer note
     # only writes R13 on its first frame.
-    p = note("c2").s(Buzzer(shape="saw")).vol(16)
+    p = note("c2").s(Buzzer(shape="saw")).vol(16).pan("L")
     psg, _, _ = render(p, seconds=1)
     r13 = psg[:, 13]
     # the shape value is constant across the held note; ensure it's set once and
@@ -283,18 +285,18 @@ def test_render_suppresses_r13_retrigger():
 
 
 def test_sweep_changes_tone_period():
-    p = note("a3").s(Tone()).sweep(12.0)  # +1 octave per second
+    p = note("a3").s(Tone()).sweep(12.0).pan("L")  # +1 octave per second
     psg, _, _ = render(p, seconds=1)
-    start = psg[1, 0] | (psg[1, 1] << 8)
-    later = psg[40, 0] | (psg[40, 1] << 8)
+    start = int(psg[1, 0]) | (int(psg[1, 1]) << 8)
+    later = int(psg[40, 0]) | (int(psg[40, 1]) << 8)
     assert later < start  # rising pitch -> shorter period
 
 
 def test_arp_fast_cycles_periods():
     # the AY hardware-arpeggio trick: chord notes cycled per frame
-    p = chord("c4:maj").arp("up").fast(16).s(Tone())
+    p = chord("c4:maj").arp("up").fast(16).s(Tone()).pan("L")
     psg, _, _ = render(p, seconds=1)
-    periods = {psg[i, 0] | (psg[i, 1] << 8) for i in range(5, 30)}
+    periods = {int(psg[i, 0]) | (int(psg[i, 1]) << 8) for i in range(5, 30)}
     assert len(periods) >= 2
 
 
@@ -354,7 +356,8 @@ def test_adsr_parse():
 
 def test_volume_adsr_decays_amplitude():
     # decay to silence over 0.3 s: R8 amplitude must fall across the note
-    p = note("c4").s(Tone()).vol(15).adsr("0:0.3:0:0")
+    # (.pan("L") pins the lone voice to channel 0 -- see the pan-bucket model).
+    p = note("c4").s(Tone()).vol(15).adsr("0:0.3:0:0").pan("L")
     psg, _, _ = render(p, bpm=120, seconds=1, fps=50)
     amp = psg[:, 8] & 0x0F
     assert amp[0] > amp[8] > amp[15]
@@ -364,8 +367,8 @@ def test_volume_adsr_decays_amplitude():
 def test_fluent_adsr_matches_struct():
     # the fluent .attack/.decay/.sustain/.release build the same vol env a
     # Sample carries, so both APIs produce the same amplitude curve.
-    fluent = note("c4").s(Tone()).vol(15).attack(0.0).decay(0.2).sustain(0.25).release(0.0)
-    struct = note("c4").s(Sample(vol="0:0.2:0.25:0", volume=15))
+    fluent = note("c4").s(Tone()).vol(15).attack(0.0).decay(0.2).sustain(0.25).release(0.0).pan("L")
+    struct = note("c4").s(Sample(vol="0:0.2:0.25:0", volume=15)).pan("L")
     pf, _, _ = render(fluent, seconds=1, fps=50)
     ps, _, _ = render(struct, seconds=1, fps=50)
     assert np.array_equal(pf[:, 8] & 0x0F, ps[:, 8] & 0x0F)
@@ -374,24 +377,24 @@ def test_fluent_adsr_matches_struct():
 def test_pitch_env_blips_then_settles():
     # +7 st blip decaying over 60 ms: the pitch starts high (short period) and
     # settles to the note's own period.
-    p = note("c4").s(Tone()).penv("0:0.06:0:0", peak=7)
+    p = note("c4").s(Tone()).penv("0:0.06:0:0", peak=7).pan("L")
     psg, _, _ = render(p, seconds=1, fps=50)
     assert _period(psg, 0) < _period(psg, 10)        # starts higher pitched
     settled = _period(psg, 20)
-    plain = _period(render(note("c4").s(Tone()), seconds=1, fps=50)[0], 20)
+    plain = _period(render(note("c4").s(Tone()).pan("L"), seconds=1, fps=50)[0], 20)
     assert settled == plain                          # returns to the base pitch
 
 
 def test_ornament_fakes_a_chord_on_one_channel():
     # ornament(0,4,7) cycles three pitches per frame -> three distinct periods
-    p = note("c4").s(Tone()).ornament(0, 4, 7)
+    p = note("c4").s(Tone()).ornament(0, 4, 7).pan("L")
     psg, _, _ = render(p, seconds=1, fps=50)
     periods = {_period(psg, i) for i in range(3, 15)}
     assert len(periods) == 3
 
 
 def test_tone_noise_enables_both_generators():
-    p = note("a3").s(tone_noise(noise_period=5))
+    p = note("a3").s(tone_noise(noise_period=5)).pan("L")
     psg, _, _ = render(p, seconds=1, fps=50)
     mix = int(psg[5, 7])
     assert not (mix & 0b001)      # tone A enabled (active low)
@@ -411,7 +414,7 @@ def test_noise_sweep_changes_noise_period():
 def test_sample_env_mode_runs_the_buzzer():
     # a Sample with env=True drives the hardware envelope (buzzer), not the
     # volume ADSR: R8 shows the env-mode flag and R13 the saw shape.
-    p = note("c2").s(Sample(tone=False, env=True, env_shape="saw"))
+    p = note("c2").s(Sample(tone=False, env=True, env_shape="saw")).pan("L")
     psg, _, _ = render(p, seconds=1, fps=50)
     assert int(psg[5, 8]) == 0x10
     assert int(psg[5, 13]) == int(Buzzer._SHAPES["saw"][0])
@@ -422,13 +425,15 @@ def test_sample_instruments_reach_every_trick():
     AY trick at once: amplitude ADSRs, tone+noise, and the hardware buzzer.
 
     (Self-contained -- it does not depend on which layers the demo track happens
-    to have enabled.)"""
+    to have enabled.)  Each voice gets its own pan bucket so all three survive
+    the per-bucket voice allocation instead of fighting for the centre channel.
+    """
     song = stack(
-        note("c2 ~ c2 g1").s(Buzzer(shape="saw")).vol(16),       # buzzer env
-        note("c4 e4 g4 e4").s(Tone()).adsr("0:0.12:0.3:0.05"),   # vol ADSR
+        note("c2 ~ c2 g1").s(Buzzer(shape="saw")).vol(16).pan("L"),     # buzzer
+        note("c4 e4 g4 e4").s(Tone()).adsr("0:0.12:0.3:0.05").pan("C"),  # vol ADSR
         note("a3 ~ a3 ~").s(tone_noise(noise_period=5,
                                        vol="0:0.1:0:0",
-                                       noise_sweep=(2, 18))),     # tone+noise
+                                       noise_sweep=(2, 18))).pan("R"),  # tone+noise
     )
     psg, L, R = render(song, bpm=125, seconds=4)
     assert np.abs(np.concatenate([L, R])).max() < 0.999      # no clipping
@@ -439,6 +444,95 @@ def test_sample_instruments_reach_every_trick():
     assert (((psg[:, 7] >> 3) & 0b111) != 0b111).any()
     # buzzer env-mode reached (R8-R10 bit-4 flag)
     assert ((psg[:, 8:11] & 0x10) != 0).any()
+
+
+# -- pan buckets / virtual-channel model ------------------------------------
+
+def _alloc(*specs):
+    """Build _FrameVoice list from (bucket, priority, order) tuples and allocate.
+
+    Returns the list of which order-index (or None) sits on each of ch0/1/2.
+    """
+    from ay_patterns import _FrameVoice, _allocate_channels, VoiceState
+    fvs = []
+    for order, (bucket, prio) in enumerate(specs):
+        st = VoiceState(tone_on=True, tone_period=100 + order, volume=10)
+        st._order = order  # tag so we can identify the survivor
+        fvs.append(_FrameVoice(bucket=bucket, priority=prio, order=order, state=st))
+    chans = _allocate_channels(fvs)
+    return [None if c is None else c._order for c in chans]
+
+
+def test_buckets_map_to_fixed_channels():
+    from ay_patterns import PAN_L, PAN_C, PAN_R
+    # L->ch0, C->ch1, R->ch2
+    assert _alloc((PAN_L, 0), (PAN_C, 0), (PAN_R, 0)) == [0, 1, 2]
+
+
+def test_per_bucket_steal_is_independent_and_leaves_channels_idle():
+    from ay_patterns import PAN_C, PAN_R
+    # two centre voices fight for ch1 (higher priority wins); ch0/ch2 stay idle
+    # even though they are free -- "pan is the channel".
+    res = _alloc((PAN_C, 5), (PAN_C, 9), (PAN_R, 1))
+    assert res[0] is None            # left idle
+    assert res[1] == 1               # the priority-9 centre voice won ch1
+    assert res[2] == 2               # the right voice
+
+
+def test_priority_then_order_breaks_ties():
+    from ay_patterns import PAN_C
+    # equal priority -> lower document/stack order wins the bucket
+    assert _alloc((PAN_C, 3), (PAN_C, 3))[1] == 0
+    # higher priority wins regardless of order
+    assert _alloc((PAN_C, 1), (PAN_C, 8))[1] == 1
+
+
+def test_any_bucket_spills_into_free_channels():
+    from ay_patterns import PAN_L, PAN_ANY
+    # ANY seats after L/C/R, into a free channel (centre preferred)
+    res = _alloc((PAN_L, 0), (PAN_ANY, 0))
+    assert res[0] == 0               # the explicit left voice
+    assert res[1] == 1               # ANY spilled into the free centre channel
+    assert res[2] is None
+    # ANY is dropped when no channel is free
+    from ay_patterns import PAN_C, PAN_R
+    res2 = _alloc((PAN_L, 0), (PAN_C, 0), (PAN_R, 0), (PAN_ANY, 0))
+    assert res2 == [0, 1, 2]         # the 4th (ANY) voice found no free channel
+
+
+def test_numeric_pan_snaps_to_bucket():
+    # back-compat: a numeric .pan(x) snaps to the nearest L/C/R channel
+    from ay_patterns import render
+    left = render(note("c4").s(Tone()).pan(0.0), seconds=1)[0]
+    centre = render(note("c4").s(Tone()).pan(0.5), seconds=1)[0]
+    right = render(note("c4").s(Tone()).pan(1.0), seconds=1)[0]
+    # voice lands on ch0 / ch1 / ch2 respectively (its tone period is non-zero)
+    assert (left[:, 0] != 0).any() and (left[:, 2] == 0).all()
+    assert (centre[:, 2] != 0).any()      # ch1 fine byte at index 2
+    assert (right[:, 4] != 0).any()       # ch2 fine byte at index 4
+
+
+def test_pan_automation_moves_the_voice_between_channels():
+    # .pan("L R") moves the voice from ch0 to ch2 across the cycle: the first
+    # half of the bar plays on ch0, the second half on ch2.
+    p = note("c4 c4").pan("L R").s(Tone())
+    psg, _, _ = render(p, bpm=120, beats_per_cycle=4, seconds=2, fps=50)
+    # first note (cycle [0,0.5)) -> ch0; second (cycle [0.5,1)) -> ch2
+    first = psg[2]
+    half = psg.shape[0] // 2
+    second = psg[half + 2]
+    assert int(first[0]) != 0 and int(first[4]) == 0     # ch0 used, ch2 silent
+    assert int(second[4]) != 0 and int(second[0]) == 0   # ch2 used, ch0 silent
+
+
+def test_pan_automation_is_audible_in_stereo():
+    # a voice panned hard-left then hard-right shifts the stereo balance.
+    p = note("c4 c4").pan("L R").s(Tone())
+    _, L, R = render(p, bpm=120, beats_per_cycle=4, seconds=2, fps=50)
+    half = len(L) // 2
+    # first half: louder on the left; second half: louder on the right
+    assert np.abs(L[:half]).mean() > np.abs(R[:half]).mean()
+    assert np.abs(R[half:]).mean() > np.abs(L[half:]).mean()
 
 
 # -- megademo integration ---------------------------------------------------
@@ -487,3 +581,64 @@ def test_megademo_structure_and_arc():
 
     assert names[root_pc(16)] == "C"        # bar 16: i (Cm)
     assert names[root_pc(18)] == "D#"       # bar 18: III (Eb)
+
+
+# -- PSG file output --------------------------------------------------------
+
+def _decode_psg(buf):
+    """Minimal PSG-stream decoder: rebuild the [frames, 14] register array."""
+    assert buf[:4] == b"PSG\x1a"
+    i = 16
+    regs = [0] * 14
+    frames = []
+    started = False
+    while i < len(buf):
+        b = buf[i]
+        if b == 0xFD:
+            break
+        if b == 0xFF:                      # new frame
+            if started:
+                frames.append(regs.copy())
+            started = True
+            i += 1
+            continue
+        if b == 0xFE:                      # skip N*4 frames
+            for _ in range(buf[i + 1] * 4):
+                frames.append(regs.copy())
+            i += 2
+            continue
+        regs[b] = buf[i + 1]               # reg, value pair
+        i += 2
+    frames.append(regs.copy())             # flush the final frame
+    return np.array(frames, dtype=np.uint8)
+
+
+def test_write_psg_roundtrip(tmp_path):
+    # a small render exercising tone, buzzer (env) and a rest
+    pat = stack(
+        note("c4 e4 g4 ~").s(Tone()),
+        note("c2").s(Buzzer(shape="tri")),
+    )
+    psg, _, _ = render(pat, bpm=120, beats_per_cycle=4, cycles=2, fps=50.0)
+
+    path = tmp_path / "x.psg"
+    ap.write_psg(str(path), psg, fps=50.0)
+    buf = path.read_bytes()
+
+    assert buf[:4] == b"PSG\x1a"
+    assert buf[5] == 50                     # interrupt rate byte
+    assert buf[-1] == 0xFD                  # end-of-data marker
+
+    decoded = _decode_psg(buf)
+    assert decoded.shape == (psg.shape[0], 14)
+    # the delta stream must reconstruct the original registers exactly
+    assert np.array_equal(decoded, psg[:, :14])
+
+
+def test_render_writes_psg_file(tmp_path):
+    path = tmp_path / "out.psg"
+    psg, _, _ = render(note("c4 e4").s(Tone()), bpm=120, cycles=1, fps=50.0,
+                       psg_path=str(path))
+    assert path.exists()
+    decoded = _decode_psg(path.read_bytes())
+    assert np.array_equal(decoded, psg[:, :14])

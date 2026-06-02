@@ -31,14 +31,32 @@ Run it:
 
 from __future__ import annotations
 
+import os
 import sys
 
 import numpy as np
 
 from ay_patterns import (
     ADSR, Buzzer, Percussion, Sample,
+    PAN_L, PAN_C, PAN_R,
     arrange, at, buzz_bass, chord, note, render, s, stack, tone_noise,
 )
+
+
+# ---------------------------------------------------------------------------
+# Channel / pan plan (the AY has only 3 channels; pan *is* the channel).
+#
+#   LEFT   = the buzzer bass                 (foundation)
+#   RIGHT  = the harmonic/melodic top        (pad / arp / lead / bell)
+#   CENTRE = the drum kit, time-sharing one channel by precedence
+#            (kick beats snare beats hat -- the most prominent hit wins the frame)
+#
+# Where there is no bass (intro / build) the pad borrows the free LEFT channel.
+# ---------------------------------------------------------------------------
+
+PRI_KICK = 3
+PRI_SNARE = 2
+PRI_HAT = 1
 
 
 # ---------------------------------------------------------------------------
@@ -119,16 +137,25 @@ BASS_ROOTS = "c2 ab1 eb2 bb1 f2 ab1 g1 g1"
 # Building blocks
 # ---------------------------------------------------------------------------
 
-def pad_progression(prog: str, inst=PAD, vol=16, p=0.5, n_bars=N_BARS, shimmer=2):
+def pad_progression(prog: str, inst=PAD, vol=16, p=PAN_R, n_bars=N_BARS, shimmer=4):
     """A chord pad: one chord per bar (progression spread over ``n_bars``),
-    gently arpeggiated so all notes are heard as a shimmer, not a hard chord."""
+    gently arpeggiated so all notes are heard as a shimmer, not a hard chord.
+
+    ``shimmer`` is the *fixed* number of arpeggio re-triggers per bar
+    (``stutter`` before ``arp``).  This is what keeps the shimmer steady:
+    arpeggiating the bare chord (``shimmer=1``) ties the onset rate to the chord
+    *size* (3 onsets/bar for a triad, 4 for a maj7), so the pulse lurches -- it
+    speeds up on the four-note chords and drags on the triads, which reads as
+    the pad slowing down.  Stuttering onto a fixed ``shimmer`` grid first pins
+    every bar to the same pulse regardless of how many notes the chord has.
+    """
     return (
         chord(prog).slow(n_bars).stutter(shimmer).arp("up")
         .s(inst).vol(vol).pan(p)
     )
 
 
-def arp_line(prog: str, speed=8, mode="updown", inst=PLUCK, vol=13, p=0.7,
+def arp_line(prog: str, speed=8, mode="updown", inst=PLUCK, vol=13, p=PAN_R,
              n_bars=N_BARS):
     """Fast arpeggio over the chord-per-bar progression (the chip 'chord').
 
@@ -143,12 +170,12 @@ def arp_line(prog: str, speed=8, mode="updown", inst=PLUCK, vol=13, p=0.7,
     )
 
 
-def bass_roots(roots: str = BASS_ROOTS, n_bars: int = 8, inst=BASS, vol=16, p=0.3):
+def bass_roots(roots: str = BASS_ROOTS, n_bars: int = 8, inst=BASS, vol=16, p=PAN_L):
     """One sustained root per bar, tracking the progression (held buzzer bass)."""
     return note(roots).slow(n_bars).s(inst).vol(vol).pan(p)
 
 
-def bass_drive(roots: str = BASS_ROOTS, n_bars: int = 8, inst=BASS, vol=16, p=0.3):
+def bass_drive(roots: str = BASS_ROOTS, n_bars: int = 8, inst=BASS, vol=16, p=PAN_L):
     """Pumping bass: the per-bar root retriggered on an 8th-note pulse.
 
     The root (held a whole bar) supplies the pitch; ``struct`` supplies a
@@ -159,19 +186,30 @@ def bass_drive(roots: str = BASS_ROOTS, n_bars: int = 8, inst=BASS, vol=16, p=0.
     return pulse.s(inst).vol(vol).pan(p)
 
 
+def drum_kit(kick_pat="x ~ ~ x ~ ~ x ~", snare_pat="~ ~ x ~ ~ ~ x ~",
+             hat_pat="~ x ~ x ~ x ~ x", hat_gain=0.5, snare_vol=12):
+    """The three drum voices, all on the CENTRE channel, time-sharing it by
+    precedence: kick > snare > hat, so whichever lands on a frame wins it."""
+    kick = s(KICK).struct(kick_pat).pan(PAN_C).priority(PRI_KICK)
+    snare = s(SNARE).struct(snare_pat).vol(snare_vol).pan(PAN_C).priority(PRI_SNARE)
+    hats = s(HAT).struct(hat_pat).gain(hat_gain).pan(PAN_C).priority(PRI_HAT)
+    return stack(kick, snare, hats)
+
+
 # ---------------------------------------------------------------------------
 # Sections
 # ---------------------------------------------------------------------------
 
 def intro():
     # 8-bar pad, gentle shimmer; a lonely bell motif tracing the chord tones.
-    pad = pad_progression(PROG_FULL, inst=PAD, vol=16, p=0.45, shimmer=1)
+    # No bass yet, so the pad takes the free LEFT channel; the bell sings RIGHT.
+    pad = pad_progression(PROG_FULL, inst=PAD, vol=16, p=PAN_L, shimmer=4)
     bell = (
         note("c5 eb5 g4 bb4 ab4 c5 g4 g4")  # one bell tone per bar
         .slow(N_BARS)
         .s(BELL)                            # struck, long ringing decay
         .vol(11)
-        .pan(0.8)
+        .pan(PAN_R)
     )
     return stack(pad, bell)
 
@@ -180,16 +218,21 @@ def build():
     # First 6 bars: pad + arp + light drums, brightening.  Last 2 bars: a
     # tension riser -- everything thins to a fast snare roll + a held dominant
     # buzzer, the classic "breath before the drop".
-    body_pad = pad_progression(PROG_FULL, inst=PAD_FIFTH, vol=16, p=0.5)
-    body_arp = arp_line(PROG_FULL, speed=8, mode="up", inst=PLUCK, vol=11, p=0.7)
-    body_rolls = s(SNARE).struct("~ ~ ~ x ~ ~ ~ x").stutter(2).vol(9).pan(0.5)
-    body_hats = s(HAT).fast(8).gain(0.6).pan(0.6)
-    body = stack(body_pad, body_arp, body_rolls, body_hats)
+    #
+    # Still no bass, so the pad borrows LEFT; the arp leads on RIGHT; the drums
+    # share CENTRE.  The arp outranks the pad would they ever collide (they are
+    # on different channels here, so they don't).
+    body_pad = pad_progression(PROG_FULL, inst=PAD_FIFTH, vol=16, p=PAN_L)
+    body_arp = arp_line(PROG_FULL, speed=8, mode="up", inst=PLUCK, vol=11, p=PAN_R)
+    body_drums = drum_kit(kick_pat="~ ~ ~ ~ ~ ~ ~ ~",
+                          snare_pat="~ ~ ~ x ~ ~ ~ x", hat_pat="x x x x x x x x",
+                          hat_gain=0.6, snare_vol=9)
+    body = stack(body_pad, body_arp, body_drums)
 
     # tension bars: a snare roll accelerating, on a held G (the dominant)
     riser = stack(
-        note("g3:maj").arp("up").fast(6).s(PLUCK).vol(10).pan(0.6),
-        s(SNARE).fast(8).stutter(2).gain(0.7).pan(0.5),
+        note("g3:maj").arp("up").fast(6).s(PLUCK).vol(10).pan(PAN_R),
+        s(SNARE).fast(8).stutter(2).gain(0.7).pan(PAN_C).priority(PRI_SNARE),
     )
     # 0-6 = body (it loops every bar), 6-8 = riser
     return arrange(at(0, body), at(6, riser))
@@ -200,37 +243,41 @@ def drop():
     # Pure-envelope buzz bass (NOT the octave-up pwm one): at low octaves the
     # envelope period is large and the pitch is accurate; an octave-up envelope
     # has tiny periods with coarse, audibly out-of-tune steps.
-    bass = bass_drive(inst=BASS, vol=16, p=0.3)
-    # arpeggiated chords as the harmonic body (fast = chip chord), wide pan
-    arp = arp_line(PROG_FULL, speed=12, mode="updown", inst=PLUCK, vol=13, p=0.78)
-    # syncopated demoscene drum groove; hats on offbeats so they don't smear the
-    # whole bar with noise
-    kick = s(KICK).struct("x ~ ~ x ~ ~ x ~").pan(0.5)
-    snare = s(SNARE).struct("~ ~ x ~ ~ ~ x ~").vol(12).pan(0.5)
-    hats = s(HAT).struct("~ x ~ x ~ x ~ x").gain(0.5).pan(0.64)
-    return stack(bass, arp, kick, snare, hats)
+    #
+    # Now the three channels are full and stable: bass LEFT, arp RIGHT, drums
+    # CENTRE (kick/snare/hat sharing the one channel by precedence).
+    bass = bass_drive(inst=BASS, vol=16, p=PAN_L)
+    arp = arp_line(PROG_FULL, speed=12, mode="updown", inst=PLUCK, vol=13, p=PAN_R)
+    drums = drum_kit(
+        kick_pat="x ~ ~ x ~ ~ x ~",
+        snare_pat="~ ~ x ~ ~ ~ x ~",
+        hat_pat="~ x ~ x ~ x ~ x",
+    )
+    return stack(bass, arp, drums)
 
 
 def acid_fill():
     """A one-bar acid-glitch turnaround: a stuttered, pitch-glitched run on the
-    gritty tone+noise STAB, punctuated by tom-like noise hits."""
+    gritty tone+noise STAB (CENTRE), punctuated by kick hits that outrank it."""
     glitch = (
         chord("c3:min").arp("up").fast(16)
         .glitch(amount=12, seed=5)
         .stutter(2)
         .s(STAB)                            # tone+noise: extra grit on the fill
         .vol(13)
-        .pan(0.5)
+        .pan(PAN_C)
     )
-    kick = s(KICK).struct("x ~ x ~ x ~ x ~").pan(0.5)
+    kick = s(KICK).struct("x ~ x ~ x ~ x ~").pan(PAN_C).priority(PRI_KICK)
     return stack(glitch, kick)
 
 
 def _phrase(tokens, depth=0.18, rate=5.0, slide=0.0):
     """A 4-bar melodic phrase: ``tokens`` is a string of 32 events (8th notes
     over 4 bars), played once across the phrase.  Gentle vibrato; optional
-    slide into accents.  ``~`` holds/rests so the line can breathe."""
-    p = note(tokens).slow(4).s(LEAD).vol(15).vibrato(depth, rate).pan(0.72)
+    slide into accents.  ``~`` holds/rests so the line can breathe.  The lead
+    sings on RIGHT, high priority so it always owns its channel."""
+    p = (note(tokens).slow(4).s(LEAD).vol(15).vibrato(depth, rate)
+         .pan(PAN_R).priority(5))
     if slide:
         p = p.slide(slide)
     return p
@@ -277,10 +324,11 @@ def solo():
         at(0, phrase_a), at(4, phrase_b),
         at(8, phrase_c), at(12, phrase_d),
     )
-    # thin backing: held buzzer bass + a quiet, slow arp shimmer + a soft kick.
-    bass = bass_roots(inst=BASS, vol=14, p=0.3)
-    arp = arp_line(PROG_FULL, speed=4, mode="up", inst=PLUCK, vol=7, p=0.55)
-    kick = s(KICK).struct("x ~ ~ ~ x ~ ~ ~").vol(11).pan(0.5)
+    # thin backing: held buzzer bass (LEFT) + a quiet slow arp shimmer and a
+    # soft kick, both on CENTRE -- the kick outranks the shimmer on its hits.
+    bass = bass_roots(inst=BASS, vol=14, p=PAN_L)
+    arp = arp_line(PROG_FULL, speed=4, mode="up", inst=PLUCK, vol=7, p=PAN_C)
+    kick = s(KICK).struct("x ~ ~ ~ x ~ ~ ~").vol(11).pan(PAN_C).priority(PRI_KICK)
     return stack(lead, bass, arp, kick)
 
 
@@ -288,13 +336,14 @@ def outro():
     # wind down to the pad; resolve with a Picardy-third C major shimmer.
     outro_prog = ("c3:min ab2:maj7 eb3:maj g3:maj "
                   "ab2:maj7 f3:min c3:maj c3:maj")
-    pad = pad_progression(outro_prog, inst=PAD, vol=16, p=0.5, shimmer=1)
+    # winding down: no bass, so the pad takes LEFT; the bell fades on RIGHT.
+    pad = pad_progression(outro_prog, inst=PAD, vol=16, p=PAN_L, shimmer=4)
     bell = (
         note("g4 eb4 c4 g4 ab4 c4 c4 c4")  # descending to the tonic
         .slow(N_BARS)
         .s(BELL)                            # the ringing bell, fading out
         .vol(9)
-        .pan(0.7)
+        .pan(PAN_R)
     )
     return stack(pad, bell)
 
@@ -340,7 +389,7 @@ def total_seconds(bpm=BPM, beats=BEATS):
     return end_bar / cps
 
 
-def render_track(wav=None, bpm=BPM):
+def render_track(wav=None, bpm=BPM, psg_path=None):
     seconds = total_seconds(bpm)
     return render(
         track(),
@@ -351,6 +400,7 @@ def render_track(wav=None, bpm=BPM):
         chip_type=__import__("pyayay").ChipType.YM,  # YM is a touch warmer
         master_volume=0.5,
         wav=wav,
+        psg_path=psg_path,
     )
 
 
@@ -360,7 +410,10 @@ def main(argv=None):
     args = [a for a in argv if not a.startswith("--")]
     out = None if report_only else (args[0] if args else "crystal_decline.wav")
 
-    psg, L, R = render_track(wav=out)
+    # write a sibling .psg register dump next to the WAV (same stem)
+    psg_out = os.path.splitext(out)[0] + ".psg" if out else None
+
+    psg, L, R = render_track(wav=out, psg_path=psg_out)
 
     from ay_analyze import print_report
     print_report(L, R, 44100, psg=psg, fps=50.0,
@@ -369,6 +422,8 @@ def main(argv=None):
         print(f"\n-> wrote {out} "
               f"({len(L)} samples, {len(L)/44100:.1f}s, "
               f"peak {np.abs(np.concatenate([L,R])).max():.3f})")
+        print(f"-> wrote {psg_out} "
+              f"({psg.shape[0]} frames, {os.path.getsize(psg_out)} bytes)")
 
 
 if __name__ == "__main__":
