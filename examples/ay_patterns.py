@@ -40,9 +40,9 @@ from strudel import (  # noqa: F401 (re-exported)
     ADSR, Chord, Event, Note, Pattern, Span, Time,
     PAN_L, PAN_C, PAN_R, PAN_ANY,
     _as_note, _frac, _fromList, _pan_bucket, _parse_token, _REST,
-    arrange, at, cat, chord, loop, midi_to_freq, note,
-    note_name_to_midi, note_to_midi_freq, pure, seq, silence, stack,
-    window,
+    alt, arrange, at, cat, chord, euclid, fastcat, loop, midi_to_freq, note,
+    note_name_to_midi, note_to_midi_freq, pure, seq, silence, slowcat,
+    stack, timecat, window,
 )
 
 

@@ -146,9 +146,12 @@ class Pattern:
     def late(self, amount) -> "Pattern":
         return self.early(-_frac(amount))
 
-    def every(self, n: int, f: Callable[["Pattern"], "Pattern"]) -> "Pattern":
-        """Apply ``f`` on every ``n``-th cycle (cycle 0, n, 2n ...)."""
+    def _every_at(self, n: int, f: Callable[["Pattern"], "Pattern"],
+                  offset: int) -> "Pattern":
+        """Apply ``f`` on cycles where ``cyc % n == offset``."""
         n = int(n)
+        if n <= 0:
+            return self
         transformed = f(self)
 
         def q(span: Span):
@@ -157,21 +160,45 @@ class Pattern:
             while cyc < span.end:
                 qs = span.intersect(Span(Fraction(cyc), Fraction(cyc + 1)))
                 if qs is not None:
-                    src = transformed if (cyc % n == 0) else self
+                    src = transformed if (cyc % n == offset) else self
                     out.extend(src.query(qs))
                 cyc += 1
             return out
         return Pattern(q)
 
+    def every(self, n: int, f: Callable[["Pattern"], "Pattern"]) -> "Pattern":
+        """Apply ``f`` on every ``n``-th cycle.
+
+        Strudel/Tidal semantics: the transform fires on the *last* cycle of each
+        ``n``-cycle window (cycle ``n-1``, ``2n-1`` ...), i.e. ``lastOf``.  Use
+        :meth:`firstOf` to fire on cycle 0 instead.
+        """
+        return self._every_at(int(n), f, int(n) - 1)
+
+    def lastOf(self, n: int, f: Callable[["Pattern"], "Pattern"]) -> "Pattern":
+        """Apply ``f`` on the last cycle of each ``n``-cycle window (== ``every``)."""
+        return self._every_at(int(n), f, int(n) - 1)
+
+    def firstOf(self, n: int, f: Callable[["Pattern"], "Pattern"]) -> "Pattern":
+        """Apply ``f`` on the first cycle of each ``n``-cycle window (cycle 0, n ...)."""
+        return self._every_at(int(n), f, 0)
+
     def degrade_by(self, prob: float, seed: int = 0) -> "Pattern":
-        """Randomly drop events with probability ``prob`` (deterministic)."""
+        """Randomly drop events with probability ``prob`` (deterministic).
+
+        The drop decision is keyed on each event's *logical onset*
+        (``whole.begin``) using its exact rational value, so the same event is
+        kept or dropped consistently regardless of how the query window is
+        sliced.
+        """
         def q(span: Span):
             out = []
             for e in self.query(span):
                 if not e.has_onset:
                     out.append(e)
                     continue
-                h = hash((float(e.part.begin), seed)) & 0xFFFFFFFF
+                onset = e.whole.begin
+                h = hash((onset.numerator, onset.denominator, seed)) & 0xFFFFFFFF
                 if (h / 0xFFFFFFFF) >= prob:
                     out.append(e)
             return out
@@ -283,21 +310,115 @@ class Pattern:
 
     # -- structure ---------------------------------------------------------
 
-    def struct(self, pattern_str: str) -> "Pattern":
+    def struct(self, rhythm) -> "Pattern":
         """Re-trigger this pattern's value on a boolean rhythm.
 
-        ``"x ~ x x"`` -> hits on steps 0, 2, 3 of a 4-step cycle.
+        ``rhythm`` may be a mini-pattern string (``"x ~ x x"`` -> hits on steps
+        0, 2, 3 of a 4-step cycle) or a boolean :class:`Pattern` (e.g.
+        ``euclid(3, 8)``).  The timing comes from ``rhythm``; the value at each
+        hit is sampled from this pattern (Strudel ``struct``).
         """
-        bools = _parse_struct(pattern_str)
-        rhythm = _fromList(bools)
-        return _app_left(rhythm, self, lambda b, v: (v if b else _REST))
+        return _app_left(_bool_pattern(rhythm), self,
+                         lambda b, v: (v if b else _REST))
 
-    def arp(self, mode: str = "up") -> "Pattern":
-        """Strudel-style arpeggiation.
+    def mask(self, rhythm) -> "Pattern":
+        """Silence this pattern's events that fall under a false step of
+        ``rhythm``, keeping the surviving events' *own* timing (Strudel
+        ``mask``).
 
-        Expands a :class:`Chord` value held over an event's span into a
-        sub-sequence of single notes *within that span*.  Sped up with
-        ``.fast(n)`` this becomes the AY hardware-arpeggio chord trick.
+        Unlike :meth:`struct` (which imposes ``rhythm``'s timing), ``mask`` only
+        gates: an event passes through unchanged iff the mask is true over its
+        onset.  ``rhythm`` is a mini-pattern string or a boolean :class:`Pattern`.
+        """
+        bp = _bool_pattern(rhythm)
+
+        def q(span: Span):
+            out = []
+            for e in self.query(span):
+                onset = e.whole.begin if e.whole else e.part.begin
+                ms = bp.query(Span(onset, onset + Fraction(1, 1_000_000)))
+                if ms and ms[0].value:
+                    out.append(e)
+            return out
+        return Pattern(q)
+
+    def when(self, rhythm, f: Callable[["Pattern"], "Pattern"]) -> "Pattern":
+        """Apply ``f`` on cycles where ``rhythm`` is true (Strudel ``when``).
+
+        ``rhythm`` is read as *one boolean per cycle*: a string ``"t f"`` means
+        cycle 0 true, cycle 1 false, then it repeats (so ``f`` fires on even
+        cycles).  A :class:`Pattern` is sampled at each cycle's start.  A true
+        value routes that whole cycle through ``f(self)``, a false value through
+        ``self`` unchanged.
+        """
+        if isinstance(rhythm, Pattern):
+            bp = rhythm
+        else:
+            # one boolean per cycle -> slowcat the bools
+            bools = _parse_struct(str(rhythm))
+            bp = cat(*[pure(b) for b in bools]) if bools else silence
+        transformed = f(self)
+
+        def q(span: Span):
+            out = []
+            cyc = math.floor(span.begin)
+            while cyc < span.end:
+                qs = span.intersect(Span(Fraction(cyc), Fraction(cyc + 1)))
+                if qs is not None:
+                    bs = bp.query(Span(Fraction(cyc),
+                                       Fraction(cyc) + Fraction(1, 1_000_000)))
+                    on = bool(bs[0].value) if bs else False
+                    src = transformed if on else self
+                    out.extend(src.query(qs))
+                cyc += 1
+            return out
+        return Pattern(q)
+
+    def iter(self, n: int) -> "Pattern":
+        """Rotate the pattern forward by ``1/n`` of a cycle on each successive
+        cycle, looping after ``n`` cycles (Strudel/Tidal ``iter``).
+
+        Cycle 0 plays the pattern as-is, cycle 1 starts ``1/n`` in, ... cycle
+        ``n-1`` starts ``(n-1)/n`` in, then it repeats.
+        """
+        return self._iter(int(n), back=False)
+
+    def iter_back(self, n: int) -> "Pattern":
+        """Like :meth:`iter` but rotating *backwards* (Strudel ``iterBack``)."""
+        return self._iter(int(n), back=True)
+
+    def _iter(self, n: int, back: bool) -> "Pattern":
+        if n <= 0:
+            return self
+
+        def q(span: Span):
+            out = []
+            cyc = math.floor(span.begin)
+            while cyc < span.end:
+                qs = span.intersect(Span(Fraction(cyc), Fraction(cyc + 1)))
+                if qs is not None:
+                    step = Fraction(cyc % n, n)
+                    shifted = self.late(step) if back else self.early(step)
+                    out.extend(shifted.query(qs))
+                cyc += 1
+            return out
+        return Pattern(q)
+
+    def arp(self, mode: str = "up", rate=None) -> "Pattern":
+        """Strudel-style arpeggiation: expand a :class:`Chord` value held over an
+        event's span into a sub-sequence of single notes *within that span*.
+
+        ``rate`` is the speed -- the second concept of a chip arpeggio, separate
+        from the *order* set by ``mode`` -- in **steps per span** (a fixed grid
+        of ``rate`` ticks, each reading ``notes[tick % len]``):
+
+        * **omitted** (default ``rate = len(notes)``) -- one tick per chord note,
+          the classic Strudel arp.  The pulse then rides on the chord *size*, so
+          a triad and a four-note chord cycle at different rates; combine with
+          ``.fast(n)`` for the hardware-arpeggio chord trick.
+        * an explicit ``rate`` -- pins every chord to the *same* pulse regardless
+          of how many notes it has (the size only sets the loop length).  This is
+          the fix for "different chord sizes feel like different speeds".
         """
         def q(span: Span):
             out = []
@@ -306,15 +427,15 @@ class Pattern:
                 if not notes or e.whole is None:
                     out.append(e)
                     continue
+                n = int(rate) if rate is not None else len(notes)
                 w = e.whole
-                step = (w.end - w.begin) / len(notes)
-                for i, nv in enumerate(notes):
+                step = (w.end - w.begin) / n
+                for i in range(n):
                     nb = w.begin + step * i
-                    ne = nb + step
-                    sub_whole = Span(nb, ne)
-                    part = sub_whole.intersect(e.part)
+                    sub = Span(nb, nb + step)
+                    part = sub.intersect(e.part)
                     if part is not None:
-                        out.append(Event(sub_whole, part, nv))
+                        out.append(Event(sub, part, notes[i % len(notes)]))
             return out
         return Pattern(q)
 
@@ -339,12 +460,55 @@ class Pattern:
             return out
         return Pattern(q)
 
+    def echo(self, times: int = 3, delay=Fraction(1, 4),
+             feedback: float = 0.5) -> "Pattern":
+        """Trailing echoes: ``times`` decaying repeats, each ``delay`` cycles
+        later and ``feedback``x quieter than the last.
+
+        The echo copies carry *descending* priority (each tap one below the dry
+        note), so on the AY they duck under live signal: because
+        ``_allocate_channels`` keeps only the highest-priority voice per pan
+        bucket, a fresh dry hit re-wins its channel and cuts its own lingering
+        tail.  Keep the echoes in the same pan bucket (the default -- they
+        inherit the note's pan) for that transient-priority duck; pan them to
+        ``"A"`` first if you want them to spill into idle channels instead.
+
+        Volume-mode notes decay geometrically; envelope-mode notes
+        (``volume >= 16``, the buzzer flag) keep their loudness (it lives in the
+        hardware envelope, not R8-R10) and only the priority steps down.
+        """
+        times = int(times)
+        delay = _frac(delay)
+
+        def q(span: Span):
+            out = []
+            for e in self.query(span):
+                if e.whole is None or times <= 0:
+                    out.append(e)
+                    continue
+                out.append(e)  # dry tap, full priority
+                g = 1.0
+                for k in range(1, times + 1):
+                    g *= feedback
+                    shift = delay * k
+                    whole = Span(e.whole.begin + shift, e.whole.end + shift)
+                    part = whole.intersect(span)
+                    if part is None:
+                        continue
+                    n = _as_note(e.value)
+                    vol = (n.volume if n.volume >= 16
+                           else max(0, round(n.volume * g)))
+                    wet = replace(n, volume=vol, priority=n.priority - k)
+                    out.append(Event(whole, part, wet))
+            return out
+        return Pattern(q)
+
     def glitch(self, amount: float = 12.0, seed: int = 1) -> "Pattern":
         """Acid-glitch: jump each event's pitch by a deterministic pseudo-random
         amount in ``[-amount, +amount]`` semitones."""
         def f_event(e: Event) -> Event:
-            onset = float(e.whole.begin) if e.whole else float(e.part.begin)
-            h = hash((round(onset, 6), seed)) & 0xFFFFFFFF
+            onset = e.whole.begin if e.whole else e.part.begin
+            h = hash((onset.numerator, onset.denominator, seed)) & 0xFFFFFFFF
             r = (h / 0xFFFFFFFF) * 2.0 - 1.0
             shift = round(r * amount)
             return e.with_value(lambda v: _as_note(v).transpose(shift))
@@ -367,6 +531,69 @@ class Pattern:
                 return n
             return replace(n, volume=max(0, min(15, round(n.volume * factor))))
         return self.fmap(f)
+
+    def compress(self, begin, end) -> "Pattern":
+        """Squeeze this pattern into the sub-span ``[begin, end)`` of every cycle
+        (Strudel ``compress``); outside that window the cycle is silent.
+
+        ``compress(1/4, 3/4)`` plays the whole pattern in the middle half of
+        each cycle.  The inverse of :meth:`zoom`.
+        """
+        begin, end = _frac(begin), _frac(end)
+        if begin >= end or begin < 0 or end > 1:
+            return silence
+        span_len = end - begin
+        # fit one cycle into span_len, then slide it to start at `begin`
+        return self.fast(Fraction(1) / span_len).late(begin)._restrict(begin, end)
+
+    def zoom(self, begin, end) -> "Pattern":
+        """Play the ``[begin, end)`` slice of each cycle stretched to fill the
+        whole cycle (Strudel ``zoom``); the inverse of :meth:`compress`.
+
+        ``zoom(1/4, 3/4)`` takes the middle half of the pattern and expands it
+        to a full cycle.
+        """
+        begin, end = _frac(begin), _frac(end)
+        span_len = end - begin
+        if span_len <= 0:
+            return silence
+        return (self._with_query_time(lambda t: t * span_len + begin)
+                    ._with_event_time(lambda t: (t - begin) / span_len)
+                    ._split_cycles())
+
+    def _restrict(self, begin, end) -> "Pattern":
+        """Keep only the parts of events that fall in ``[begin, end)`` of each
+        cycle (helper for :meth:`compress`)."""
+        begin, end = _frac(begin), _frac(end)
+
+        def q(span: Span):
+            out = []
+            cyc = math.floor(span.begin)
+            while cyc < span.end:
+                base = Fraction(cyc)
+                win = Span(base + begin, base + end).intersect(span)
+                if win is not None:
+                    for e in self.query(win):
+                        part = e.part.intersect(win)
+                        if part is not None:
+                            out.append(Event(e.whole, part, e.value))
+                cyc += 1
+            return out
+        return Pattern(q)
+
+    def _split_cycles(self) -> "Pattern":
+        """Re-query per cycle so events never span a cycle boundary (helper for
+        :meth:`zoom`, which can otherwise stretch a part across the seam)."""
+        def q(span: Span):
+            out = []
+            cyc = math.floor(span.begin)
+            while cyc < span.end:
+                qs = span.intersect(Span(Fraction(cyc), Fraction(cyc + 1)))
+                if qs is not None:
+                    out.extend(self.query(qs))
+                cyc += 1
+            return out
+        return Pattern(q)
 
     # -- combination -------------------------------------------------------
 
@@ -470,15 +697,155 @@ def cat(*patterns: Pattern) -> Pattern:
     return Pattern(q)
 
 
+def fastcat(*patterns: Pattern) -> Pattern:
+    """Concatenate patterns into a *single* cycle (Strudel ``fastcat``); each
+    pattern is squeezed into an equal slice.  Alias-of-record for :func:`seq`
+    when given whole patterns rather than tokens."""
+    pats = [p for p in patterns]
+    n = len(pats)
+    if n == 0:
+        return silence
+    # place pattern i into the [i/n, (i+1)/n) slice of every cycle
+    return stack(*[p.compress(Fraction(i, n), Fraction(i + 1, n))
+                   for i, p in enumerate(pats)])
+
+
+def slowcat(*patterns: Pattern) -> Pattern:
+    """Alias for :func:`cat` (one pattern per cycle)."""
+    return cat(*patterns)
+
+
+def alt(pattern: Pattern, method: str, *values) -> Pattern:
+    """Alternate a parameter per cycle (Strudel ``<a b c>`` for *parameters*).
+
+    Applies ``pattern.<method>(values[i])`` on cycle ``i`` (wrapping), so the
+    chosen transform cycles bar-by-bar::
+
+        alt(lead, "s", buzz_saw, buzz_tri)   # saw bar, tri bar, saw bar ...
+        alt(lead, "pan", "L", "R")           # ping-pong the channel each cycle
+        alt(lead, "add", 0, 7, 12)           # transpose cycles 0 / +7 / +12
+
+    ``method`` is any one-argument :class:`Pattern` transform (``s``, ``pan``,
+    ``add``, ``vol``, ``priority``, ``fast`` ...).  Because it routes through
+    real transforms via :func:`cat`, it composes with everything else
+    (``alt(p, ...).fast(2).every(4, rev)``) -- unlike a scheduler-side
+    ``<...>`` string hack.
+    """
+    if not values:
+        return pattern
+    return cat(*[getattr(pattern, method)(v) for v in values])
+
+
+def timecat(*pairs) -> Pattern:
+    """Concatenate ``(weight, pattern)`` pairs within one cycle, each pattern
+    occupying a slice proportional to its weight (Strudel/Tidal ``timecat``).
+
+        timecat((3, a), (1, b))   # a fills 3/4 of the cycle, b the last 1/4
+
+    Accepts either positional pairs or a single list of pairs.
+    """
+    if len(pairs) == 1 and isinstance(pairs[0], (list, tuple)) \
+            and pairs and isinstance(pairs[0][0], (list, tuple)):
+        pairs = tuple(pairs[0])
+    weights = [_frac(w) for w, _ in pairs]
+    total = sum(weights)
+    if total <= 0:
+        return silence
+    layers = []
+    pos = Fraction(0)
+    for (w, p) in pairs:
+        w = _frac(w)
+        begin = pos / total
+        pos += w
+        end = pos / total
+        layers.append(p.compress(begin, end))
+    return stack(*layers)
+
+
+def _bjorklund(k: int, n: int) -> List[bool]:
+    """Bjorklund's algorithm: distribute ``k`` pulses as evenly as possible over
+    ``n`` steps, returning a list of ``n`` booleans (the Euclidean rhythm)."""
+    k, n = int(k), int(n)
+    if n <= 0:
+        return []
+    k = max(0, min(k, n))
+    if k == 0:
+        return [False] * n
+    if k == n:
+        return [True] * n
+    # build groups, then repeatedly fold the remainder into the heads
+    groups = [[True] for _ in range(k)] + [[False] for _ in range(n - k)]
+    counts_a, counts_b = k, n - k
+    while counts_b > 1:
+        move = min(counts_a, counts_b)
+        new_groups = []
+        for i in range(move):
+            groups[i] = groups[i] + groups[counts_a + i]
+            new_groups.append(groups[i])
+        remainder = groups[move:counts_a] + groups[counts_a + move:]
+        groups = new_groups + remainder
+        counts_a, counts_b = move, (counts_a - move) + (counts_b - move)
+        if counts_a <= 1:
+            break
+    return [step for g in groups for step in g]
+
+
+def euclid(k: int, n: int, rotate: int = 0) -> Pattern:
+    """A Euclidean rhythm as a boolean structure pattern: ``k`` pulses spread as
+    evenly as possible over ``n`` steps (Bjorklund).  ``rotate`` rotates the
+    pattern left by that many steps.
+
+    Use it as a structure mask: ``note("c4").struct(euclid(3, 8))`` gives the
+    classic ``x ~ ~ x ~ ~ x ~`` tresillo.
+    """
+    steps = _bjorklund(k, n)
+    if rotate:
+        r = rotate % len(steps) if steps else 0
+        steps = steps[r:] + steps[:r]
+    return _fromList(steps)
+
+
+def _bool_pattern(spec) -> Pattern:
+    """Coerce a boolean-rhythm spec to a Pattern of booleans.
+
+    Accepts an existing :class:`Pattern` (assumed to yield truthy/falsy values),
+    or a mini-pattern string of ``x``/``1``/``t`` (true) and ``~``/``0``/``f``
+    (false), laid out evenly across one cycle.
+    """
+    if isinstance(spec, Pattern):
+        return spec
+    bools = _parse_struct(str(spec))
+    return _fromList(bools)
+
+
 def _app_left(structure: Pattern, values: Pattern, combine) -> Pattern:
     """Combine two patterns, taking structure (timing) from ``structure`` and
-    sampling ``values`` at each structural onset."""
+    sampling ``values`` over each structural event's span (Strudel ``appLeft``).
+
+    For each structural event we query ``values`` across that event's whole
+    span and pick the value active at the structural onset -- the value event
+    whose own span contains the onset (falling back to the earliest-onset value
+    in the span).  Querying the full span rather than an epsilon window at the
+    onset means this works when ``values`` is itself a fast/subdivided pattern.
+    """
     def q(span: Span):
         out = []
         for se in structure.query(span):
-            sample_at = se.whole.begin if se.whole else se.part.begin
-            vs = values.query(Span(sample_at, sample_at + Fraction(1, 1_000_000)))
-            v = vs[0].value if vs else None
+            sspan = se.whole if se.whole else se.part
+            onset = sspan.begin
+            vs = values.query(sspan)
+            v = None
+            best = None
+            for ve in vs:
+                vw = ve.whole if ve.whole else ve.part
+                # prefer the value whose span contains the structural onset
+                if vw.begin <= onset < vw.end:
+                    v = ve.value
+                    break
+                # otherwise track the earliest value event in the span
+                if best is None or vw.begin < best:
+                    best = vw.begin
+                    v = ve.value
             combined = combine(se.value, v)
             if combined is _REST or combined is None:
                 continue
@@ -804,8 +1171,11 @@ def _arp_order(midis: Sequence[float], mode: str) -> List[float]:
     return ms
 
 
+_TRUE_TOKENS = {"x", "1", "t", "true"}
+
+
 def _parse_struct(s: str) -> List[bool]:
-    return [tok == "x" or tok == "1" for tok in s.split()]
+    return [tok.lower() in _TRUE_TOKENS for tok in s.split()]
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,10 @@ tracker-style **instruments / "samples"** -- the ADSR envelope system:
     metallic stab and a noise-swept snare;
   * an *ornament* (``.ornament(0,4,7)``) -- the hardware-arpeggio chord trick
     expressed as a per-frame semitone table instead of ``.arp().fast()``;
-  * a tone+envelope "buzzer" bass (the two-oscillator timbre);
+  * a tone+envelope "buzzer" bass (the two-oscillator timbre), with its
+    envelope **shape alternated per bar** via ``alt`` (saw/triangle);
+  * a priority-ducked ``.echo`` on the stab -- decaying trailing taps that the
+    next dry hit cuts off by re-winning the channel;
   * noise+tone percussion (kick / snare / hat).
 
 Two ways to define an instrument, both shown below:
@@ -48,10 +51,12 @@ import sys
 
 import numpy as np
 
+from fractions import Fraction
+
 from ay_patterns import (
     ADSR, Buzzer, Percussion, Sample, Tone,
     PAN_L, PAN_C, PAN_R,
-    note, render, s, stack, tone_noise,
+    alt, note, render, s, stack, tone_noise,
 )
 
 
@@ -70,9 +75,18 @@ def demo() -> "Pattern":  # noqa: F821 (Pattern is the engine's return type)
     # The hardware envelope is the oscillator (the two-oscillator "buzzer").
     # Lowest priority on CENTRE, so any drum hit steals the channel from it and
     # the bass fills the gaps between hits.
+    #
+    # `alt(...)` alternates the envelope *shape* per bar -- saw on even bars,
+    # triangle on odd -- the per-cycle ``<...>`` idea applied to a parameter
+    # that lives on the instrument.  Shape sits on the Buzzer, so we alternate
+    # whole instruments via ``.s``; the harmony is unchanged, only the timbre
+    # flips each cycle.
     bass = (
-        note("c2 ~ c2 g1")
-        .s(Buzzer(shape="saw", detune=0.1, tone=True))
+        alt(
+            note("c2 ~ c2 g1"), "s",
+            Buzzer(shape="saw", detune=0.1, tone=True),
+            Buzzer(shape="tri", detune=0.1, tone=True),
+        )
         .vol(16)
         .pan(PAN_C)
         .priority(PRI_BASS)
@@ -97,24 +111,37 @@ def demo() -> "Pattern":  # noqa: F821 (Pattern is the engine's return type)
     # tone + noise on one channel (the AY's two-generators timbre); a short
     # percussive volume ADSR, and the noise colour swept bright->dark so it
     # bites on the attack.
+    #
+    # ``.echo`` trails three decaying repeats one step apart into the rests.
+    # Each tap carries a lower ``.priority`` than the dry hit, so when the next
+    # stab lands it re-wins the LEFT channel and cuts its own lingering tail --
+    # the transient-priority duck, falling straight out of the pan-bucket
+    # allocator (no feedback bus needed).
     stab = (
         note("c3 ~ ~ ~  c3 ~ eb3 ~")
         .s(tone_noise(noise_period=4, vol="0:0.1:0:0", noise_sweep=(2, 18)))
         .vol(14)
         .pan(PAN_L)
+        .priority(5)
+        .echo(times=3, delay=Fraction(1, 8), feedback=0.5)
     )
 
     # --- RIGHT : ornament chord -- a fake major chord on ONE channel ---------
     # ``.ornament(0,4,7)`` cycles the chord tones per frame (the AY
     # hardware-arpeggio trick as a table); the same idea as
     # chord(...).arp().fast(), but stated as the instrument's own ornament.
-    arp = (
+    #
+    # A second use of ``alt``: over a *value* transform here, lifting the whole
+    # figure up a fourth on odd bars (call/response) -- the harmony moves with
+    # the bar grid, no scheduler hack.
+    arp = alt(
         note("c4 ~ a3 ~  f3 ~ g3 ~")
         .s(Tone())
         .ornament(0, 4, 7)
         .adsr("0:0.0:1:0.05")
         .vol(11)
-        .pan(PAN_R)
+        .pan(PAN_R),
+        "add", 0, 5,
     )
 
     # Five voices, three channels: stab LEFT, bass+drums share CENTRE, arp RIGHT.

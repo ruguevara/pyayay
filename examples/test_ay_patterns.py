@@ -10,6 +10,7 @@ register stream.
 """
 
 import math
+from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -17,7 +18,8 @@ import pytest
 import ay_patterns as ap
 from ay_patterns import (
     ADSR, Buzzer, Percussion, Sample, Tone,
-    Span, arrange, at, chord, note, render, s, stack, cat, window, tone_noise,
+    Span, arrange, at, chord, note, render, s, seq, stack, cat, window,
+    tone_noise, euclid, fastcat, slowcat, timecat, alt,
 )
 
 
@@ -102,19 +104,115 @@ def test_add_transpose():
 
 
 def test_every():
-    # every 2nd cycle, transpose up an octave
+    # Strudel/Tidal `every n` fires on the *last* cycle of each n-window
+    # (cycle n-1), i.e. lastOf.  For n=2 that is the odd cycles.
     p = note("c4").every(2, lambda x: x.add(12))
     c0 = p.query(Span(0, 1))[0].value.midi
     c1 = p.query(Span(1, 2))[0].value.midi
     c2 = p.query(Span(2, 3))[0].value.midi
-    assert c0 == 72  # cycle 0 transformed
-    assert c1 == 60  # cycle 1 untouched
-    assert c2 == 72  # cycle 2 transformed
+    c3 = p.query(Span(3, 4))[0].value.midi
+    assert c0 == 60  # cycle 0 untouched
+    assert c1 == 72  # cycle 1 (== n-1) transformed
+    assert c2 == 60  # cycle 2 untouched
+    assert c3 == 72  # cycle 3 transformed
+
+
+def test_first_last_of():
+    # firstOf fires on cycle 0 of each window; lastOf on cycle n-1
+    pf = note("c4").firstOf(3, lambda x: x.add(12))
+    assert [pf.query(Span(c, c + 1))[0].value.midi for c in range(4)] == [72, 60, 60, 72]
+    pl = note("c4").lastOf(3, lambda x: x.add(12))
+    assert [pl.query(Span(c, c + 1))[0].value.midi for c in range(4)] == [60, 60, 72, 60]
 
 
 def test_struct():
     d = s(Percussion("kick")).struct("x ~ x ~")
     assert _onsets(d) == [0.0, 0.5]
+
+
+def test_struct_accepts_pattern():
+    # struct can take a boolean Pattern (e.g. euclid), not just a string
+    d = note("c4").struct(euclid(3, 8))
+    assert _onsets(d) == [0.0, 0.375, 0.75]
+
+
+def test_struct_samples_fast_values():
+    # value pattern faster than the structure: each hit picks the value
+    # covering its onset (Strudel appLeft over the whole span).
+    p = note("c4 e4 g4 b4").struct("x x x x x x x x")
+    got = [(float(ev.whole.begin), ev.value.midi)
+           for ev in sorted(p.query(Span(0, 1)), key=lambda e: e.whole.begin)]
+    assert [m for _, m in got] == [60, 60, 64, 64, 67, 67, 71, 71]
+
+
+def test_mask():
+    # mask gates events but keeps their own timing (unlike struct)
+    m = note("c4 d4 e4 f4 g4 a4 b4 c5").mask("x x x x ~ ~ ~ ~")
+    assert _onsets(m) == [0.0, 0.125, 0.25, 0.375]
+
+
+def test_when():
+    # `when` fires the transform on cycles where the bool is true, one bool
+    # per cycle: "t f" -> even cycles transformed, odd cycles untouched.
+    p = note("c4").when("t f", lambda x: x.add(12))
+    got = [p.query(Span(c, c + 1))[0].value.midi for c in range(4)]
+    assert got == [72, 60, 72, 60]
+
+
+def test_iter():
+    base = seq("c4", "e4", "g4", "b4")
+    p = base.iter(4)
+
+    def midis(c):
+        evs = sorted(p.query(Span(c, c + 1)), key=lambda e: e.whole.begin)
+        return [e.value.midi for e in evs]
+
+    assert midis(0) == [60, 64, 67, 71]
+    assert midis(1) == [64, 67, 71, 60]
+    assert midis(2) == [67, 71, 60, 64]
+    # iter_back rotates the other way
+    pb = base.iter_back(4)
+    evs = sorted(pb.query(Span(1, 2)), key=lambda e: e.whole.begin)
+    assert [e.value.midi for e in evs] == [71, 60, 64, 67]
+
+
+def test_euclid():
+    def steps(p):
+        return [bool(ev.value) for ev in
+                sorted(p.query(Span(0, 1)), key=lambda e: e.whole.begin)]
+    assert steps(euclid(3, 8)) == [True, False, False, True, False, False, True, False]
+    assert steps(euclid(5, 8)) == [True, False, True, True, False, True, True, False]
+    assert steps(euclid(4, 4)) == [True] * 4
+    assert steps(euclid(0, 4)) == [False] * 4
+    # rotation shifts the pattern left
+    assert steps(euclid(3, 8, rotate=1)) == [False, False, True, False, False, True, False, True]
+
+
+def test_fastcat_and_slowcat():
+    # fastcat packs all patterns into one cycle (like seq of whole patterns)
+    fc = fastcat(note("c4"), note("e4"), note("g4"))
+    assert _onsets(fc) == [0.0, 1 / 3, 2 / 3]
+    # slowcat is one pattern per cycle (alias of cat)
+    sc = slowcat(note("c4"), note("e4"))
+    assert sc.query(Span(0, 1))[0].value.midi == 60
+    assert sc.query(Span(1, 2))[0].value.midi == 64
+
+
+def test_timecat():
+    # weighted concatenation within one cycle: c4 fills 3/4, e4 the last 1/4
+    p = timecat((3, note("c4")), (1, note("e4")))
+    assert _onsets(p) == [0.0, 0.75]
+
+
+def test_compress_and_zoom():
+    # compress squeezes the pattern into a sub-span of each cycle
+    c = seq("c4", "e4").compress(0.25, 0.75)
+    assert _onsets(c) == [0.25, 0.5]
+    # zoom is the inverse: extract the middle half, stretch to a full cycle
+    z = seq("c4", "e4", "g4", "b4").zoom(0.25, 0.75)
+    evs = sorted(z.query(Span(0, 1)), key=lambda e: e.whole.begin)
+    assert [e.value.midi for e in evs] == [64, 67]
+    assert _onsets(z) == [0.0, 0.5]
 
 
 def test_cat_one_per_cycle():
@@ -219,6 +317,107 @@ def test_gain_scales_volume_but_not_envelope():
     # envelope-mode notes (volume 16) are left untouched
     buzz = note("c4").s(Buzzer()).vol(16).gain(0.5)
     assert _values(buzz)[0].volume == 16
+
+
+# -- arp speed (chord-size-independent) -------------------------------------
+
+def test_arp_default_is_chord_size_coupled():
+    # back-compat: bare arp() still divides the span into len(notes) slices,
+    # so a triad and a four-note chord cycle at different rates.
+    triad = _onsets(chord("c4:maj").arp("up"))
+    seven = _onsets(chord("c4:maj7").arp("up"))
+    assert len(triad) == 3
+    assert len(seven) == 4
+
+
+def test_arp_positional_rate_is_size_independent():
+    # the fix: a fixed steps-per-cycle rate ticks at the SAME pulse regardless
+    # of chord size; only the loop length (which note each tick reads) differs.
+    triad = chord("c4:maj").arp("up", 12)
+    seven = chord("c4:maj7").arp("up", 12)
+    assert len(_onsets(triad)) == 12
+    assert len(_onsets(seven)) == 12
+    tm = [round(e.value.midi) for e in
+          sorted(triad.query(Span(0, 1)), key=lambda e: e.whole.begin)]
+    sm = [round(e.value.midi) for e in
+          sorted(seven.query(Span(0, 1)), key=lambda e: e.whole.begin)]
+    assert tm[:6] == [60, 64, 67, 60, 64, 67]   # wraps every 3
+    assert sm[:8] == [60, 64, 67, 71, 60, 64, 67, 71]  # wraps every 4
+
+
+# -- per-cycle parameter alternation (alt) ----------------------------------
+
+def test_alt_cycles_transform_per_cycle():
+    # alt(p, "add", 0, 7) transposes cycle 0 by 0 and cycle 1 by +7, wrapping.
+    p = alt(note("c4"), "add", 0, 7)
+    assert round(p.query(Span(0, 1))[0].value.midi) == 60
+    assert round(p.query(Span(1, 2))[0].value.midi) == 67
+    assert round(p.query(Span(2, 3))[0].value.midi) == 60  # wraps
+
+
+def test_alt_swaps_instrument_per_cycle():
+    # The headline use: alternate the buzzer envelope shape (instrument) per
+    # bar.  Shape lives on the instrument, so we alternate whole instruments.
+    saw, tri = Buzzer(shape="saw"), Buzzer(shape="tri")
+    p = alt(note("c4"), "s", saw, tri)
+    assert p.query(Span(0, 1))[0].value.instrument is saw
+    assert p.query(Span(1, 2))[0].value.instrument is tri
+
+
+def test_alt_composes_with_other_transforms():
+    # Because alt routes through real transforms, it composes (here .fast(2)
+    # puts both cycles' worth of the alternation into a single doubled cycle).
+    p = alt(note("c4"), "add", 0, 12).fast(2)
+    midis = sorted(round(e.value.midi) for e in p.query(Span(0, 1)))
+    assert midis == [60, 72]
+
+
+def test_alt_empty_is_identity():
+    p = note("c4")
+    assert alt(p, "add") is p
+
+
+# -- echo -------------------------------------------------------------------
+
+def test_echo_adds_decaying_trailing_taps():
+    p = note("c4").vol(12).echo(times=2, delay=0.25, feedback=0.5)
+    evs = sorted(p.query(Span(0, 1)), key=lambda e: e.whole.begin)
+    # dry hit at 0, then two echoes at +1/4 and +1/2
+    assert [float(e.whole.begin) for e in evs] == pytest.approx([0.0, 0.25, 0.5])
+    # geometric decay 12 -> 6 -> 3
+    assert [e.value.volume for e in evs] == [12, 6, 3]
+
+
+def test_echo_taps_have_descending_priority():
+    # Each tap sits one priority below the previous so a fresh dry note wins
+    # its pan bucket back and ducks the tail.
+    p = note("c4").priority(5).echo(times=3, feedback=0.7)
+    evs = sorted(p.query(Span(0, 1)), key=lambda e: e.whole.begin)
+    assert [e.value.priority for e in evs] == [5, 4, 3, 2]
+
+
+def test_echo_preserves_envelope_mode_loudness():
+    # Buzzer notes carry volume 16 (the "use envelope" flag); echo must not
+    # scale that into a quieter R8 value -- only the priority steps down.
+    p = note("c4").vol(16).echo(times=2, feedback=0.5)
+    evs = sorted(p.query(Span(0, 1)), key=lambda e: e.whole.begin)
+    assert [e.value.volume for e in evs] == [16, 16, 16]
+    assert [e.value.priority for e in evs] == [0, -1, -2]
+
+
+def test_echo_tail_ducks_under_a_fresh_hit():
+    # End-to-end: a note whose echo tail would overlap the next dry hit must
+    # yield the channel to that fresh, higher-priority hit.  Two hits a bar
+    # apart, echo delay 1/4 -> the second hit's onset coincides with no tap of
+    # its own, but the first hit's 4th-tap region is reclaimed by hit 2.
+    from ay_patterns import PAN_C
+    dry = note("c4 ~ ~ ~ c4 ~ ~ ~").s(Tone()).pan(PAN_C)
+    p = dry.echo(times=6, delay=Fraction(1, 8), feedback=0.8)
+    evs = sorted(p.query(Span(0, 1)), key=lambda e: e.whole.begin)
+    # the two dry onsets keep the top priority; every tap is strictly lower
+    dry_onsets = [e for e in evs if e.value.priority == 0]
+    assert len(dry_onsets) == 2
+    assert all(e.value.priority < 0 for e in evs if e not in dry_onsets)
 
 
 # -- end-to-end render smoke tests ------------------------------------------

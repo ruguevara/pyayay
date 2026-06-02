@@ -137,35 +137,36 @@ BASS_ROOTS = "c2 ab1 eb2 bb1 f2 ab1 g1 g1"
 # Building blocks
 # ---------------------------------------------------------------------------
 
-def pad_progression(prog: str, inst=PAD, vol=16, p=PAN_R, n_bars=N_BARS, shimmer=4):
+def pad_progression(prog: str, inst=PAD, vol=16, p=PAN_R, n_bars=N_BARS, shimmer=12):
     """A chord pad: one chord per bar (progression spread over ``n_bars``),
     gently arpeggiated so all notes are heard as a shimmer, not a hard chord.
 
-    ``shimmer`` is the *fixed* number of arpeggio re-triggers per bar
-    (``stutter`` before ``arp``).  This is what keeps the shimmer steady:
-    arpeggiating the bare chord (``shimmer=1``) ties the onset rate to the chord
-    *size* (3 onsets/bar for a triad, 4 for a maj7), so the pulse lurches -- it
-    speeds up on the four-note chords and drags on the triads, which reads as
-    the pad slowing down.  Stuttering onto a fixed ``shimmer`` grid first pins
-    every bar to the same pulse regardless of how many notes the chord has.
+    ``shimmer`` is the arpeggio's *absolute* speed -- ticks per bar -- passed
+    straight to ``arp("up", shimmer)``.  Because the rate is fixed, the pulse no
+    longer depends on the chord *size*: arpeggiating the bare chord ties the
+    onset rate to how many notes it has (3 onsets/bar for a triad, 4 for a
+    maj7), so the pad seems to speed up on four-note chords and drag on triads.
+    A fixed steps-per-bar rate pins every bar to the same shimmer; the only
+    thing the chord size changes is how many ticks pass before the figure loops.
     """
     return (
-        chord(prog).slow(n_bars).stutter(shimmer).arp("up")
+        chord(prog).slow(n_bars).arp("up", shimmer)
         .s(inst).vol(vol).pan(p)
     )
 
 
-def arp_line(prog: str, speed=8, mode="updown", inst=PLUCK, vol=13, p=PAN_R,
+def arp_line(prog: str, speed=24, mode="updown", inst=PLUCK, vol=13, p=PAN_R,
              n_bars=N_BARS):
     """Fast arpeggio over the chord-per-bar progression (the chip 'chord').
 
-    ``chord(prog).slow(n_bars)`` puts one chord per bar; ``.stutter(speed)``
-    repeats each chord ``speed`` times within its bar; ``.arp(mode)`` then
-    cycles the chord notes -- i.e. the AY hardware-arpeggio chord trick, kept in
-    sync with the 8-bar progression.
+    ``chord(prog).slow(n_bars)`` puts one chord per bar; ``.arp(mode, speed)``
+    then cycles the chord notes at an *absolute* ``speed`` ticks per bar -- the
+    AY hardware-arpeggio chord trick, kept in sync with the progression and at a
+    steady pulse regardless of whether a given bar's chord is a triad or a
+    four-note chord (the rate no longer rides on the chord size).
     """
     return (
-        chord(prog).slow(n_bars).stutter(speed).arp(mode)
+        chord(prog).slow(n_bars).arp(mode, speed)
         .s(inst).vol(vol).pan(p)
     )
 
@@ -247,7 +248,7 @@ def drop():
     # Now the three channels are full and stable: bass LEFT, arp RIGHT, drums
     # CENTRE (kick/snare/hat sharing the one channel by precedence).
     bass = bass_drive(inst=BASS, vol=16, p=PAN_L)
-    arp = arp_line(PROG_FULL, speed=12, mode="updown", inst=PLUCK, vol=13, p=PAN_R)
+    arp = arp_line(PROG_FULL, speed=24, mode="updown", inst=PLUCK, vol=14, p=PAN_R)
     drums = drum_kit(
         kick_pat="x ~ ~ x ~ ~ x ~",
         snare_pat="~ ~ x ~ ~ ~ x ~",
