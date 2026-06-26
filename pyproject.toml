@@ -6,7 +6,7 @@ authors = [
 ]
 description = "PyAYay is a Python extension wrapper for AY-3-8910 sound chip emulator"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -31,6 +31,13 @@ write_to = "version.txt"
 local_scheme = "no-local-version"
 
 [tool.cibuildwheel]
-# Skip PyPy: the bundled pybind11 doesn't compile against PyPy's C-API headers
-# (PyModule_GetFilenameObject missing, PyObject* const* conversion errors).
+# CPython 3.9-3.13 only. Skip PyPy: the bundled pybind11 doesn't compile
+# against PyPy's C-API headers (PyModule_GetFilenameObject missing,
+# PyObject* const* conversion errors).
+build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
 skip = "pp*"
+
+[tool.cibuildwheel.macos]
+# Build a single universal2 wheel on the Apple Silicon runner that also
+# covers Intel (x86_64) Macs.
+archs = ["universal2"]
