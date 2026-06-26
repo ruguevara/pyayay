@@ -29,3 +29,8 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools_scm]
 write_to = "version.txt"
 local_scheme = "no-local-version"
+
+[tool.cibuildwheel]
+# Skip PyPy: the bundled pybind11 doesn't compile against PyPy's C-API headers
+# (PyModule_GetFilenameObject missing, PyObject* const* conversion errors).
+skip = "pp*"
