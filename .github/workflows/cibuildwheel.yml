@@ -27,12 +27,14 @@ jobs:
 
       # setuptools_scm cannot reach the git tag from inside cibuildwheel's
       # build sandbox, so it derives a dev version and pip rejects the wheel
-      # name. Compute the version once on the host and pin it for the build.
+      # name. Derive the version from the git tag on the host and pin it.
       - name: Derive version
         id: scm
+        shell: bash
         run: |
-          python -m pip install setuptools_scm
-          echo "version=$(python -m setuptools_scm)" >> "$GITHUB_OUTPUT"
+          version="$(git describe --tags --abbrev=0 | sed 's/^v//')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Pinned version: $version"
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.17.0
