@@ -174,6 +174,10 @@ for frame in range(10):
     # ... use out
 ```
 
+For an emulator that records writes in CPU T-states inside a frame (the AY runs at half the CPU
+clock), the absolute AY cycle of a write at T-state `t` of frame `f` is
+`f * (t_frame // 2) + (t + 1) // 2`. Rounding up keeps a write from landing before its time.
+
 ## Rendering a frame with timed register writes
 
 `render_frame(writes, samples, t_frame, stereo=False, remove_dc=True) -> bytes` renders one

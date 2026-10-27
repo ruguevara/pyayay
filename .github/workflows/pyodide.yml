@@ -2,9 +2,13 @@ name: Pyodide wheel
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     branches:
-      - feature/render-frame
+      - main
+  release:
+    types:
+      - published
 
 jobs:
   build_pyodide:
