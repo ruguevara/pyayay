@@ -41,3 +41,8 @@ skip = "pp*"
 # Build a single universal2 wheel on the Apple Silicon runner that also
 # covers Intel (x86_64) Macs.
 archs = ["universal2"]
+
+[tool.pyodide.build]
+# Pyodide 0.29.x (used by Pyxel's web runtime) accepts pyodide_2025_0_wasm32 and
+# emscripten_4_0_9_wasm32 wheels, not the newer pyemscripten_* platform tag.
+use_legacy_platform = true
