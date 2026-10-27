@@ -1,6 +1,7 @@
 #include <aychip.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <stdexcept>
@@ -23,6 +24,137 @@ public:
 private:
     AyumiEmulator& AY_;
 };
+
+
+// True if the buffer holds native unsigned 32-bit ints
+static auto isUInt32Format(const py::buffer_info& info) -> bool {
+    if (info.itemsize != 4) {
+        return false;
+    }
+    std::string fmt = info.format;
+    if (!fmt.empty() && (fmt[0] == '@' || fmt[0] == '=')) {
+        fmt = fmt.substr(1);
+    }
+    const uint16_t probe = 1;
+    const bool littleEndian = *reinterpret_cast<const uint8_t*>(&probe) == 1;
+    if (!fmt.empty() && fmt[0] == (littleEndian ? '<' : '>')) {
+        fmt = fmt.substr(1);
+    }
+    return fmt == "I" || fmt == "L";
+}
+
+static inline auto toInt16(double v) -> int16_t {
+    v = std::nearbyint(v * 32767.0);
+    if (v > 32767.0) return 32767;
+    if (v < -32768.0) return -32768;
+    return static_cast<int16_t>(v);
+}
+
+static inline auto putInt16LE(char* dst, int16_t v) -> void {
+    const uint16_t u = static_cast<uint16_t>(v);
+    dst[0] = static_cast<char>(u & 0xff);
+    dst[1] = static_cast<char>(u >> 8);
+}
+
+struct RegWrite {
+    uint64_t sample;  // write is applied before this sample is rendered
+    uint8_t reg;
+    uint8_t value;
+};
+
+static auto renderFrame(AyumiEmulator& AY, const py::buffer& writes, int samples, int64_t tFrame,
+                        bool stereo, bool removeDC) -> py::bytes {
+    if (samples <= 0) {
+        throw std::invalid_argument("samples must be greater than 0");
+    }
+    if (tFrame <= 0) {
+        throw std::invalid_argument("t_frame must be greater than 0");
+    }
+    auto info = writes.request();
+    if (!isUInt32Format(info)) {
+        throw std::invalid_argument("writes buffer format must be uint32 (array('I') or numpy.uint32), got '"
+                                    + info.format + "'");
+    }
+    size_t count;
+    if (info.ndim == 1) {
+        if (info.shape[0] % 3 != 0) {
+            throw std::invalid_argument("flat writes buffer length must be a multiple of 3");
+        }
+        if (info.shape[0] > 1 && info.strides[0] != 4) {
+            throw std::invalid_argument("writes buffer must be contiguous");
+        }
+        count = static_cast<size_t>(info.shape[0] / 3);
+    } else if (info.ndim == 2) {
+        if (info.shape[1] != 3) {
+            throw std::invalid_argument("2-D writes buffer must have shape (n, 3)");
+        }
+        if (info.shape[0] > 0 && (info.strides[1] != 4 || (info.shape[0] > 1 && info.strides[0] != 12))) {
+            throw std::invalid_argument("writes buffer must be contiguous");
+        }
+        count = static_cast<size_t>(info.shape[0]);
+    } else {
+        throw std::invalid_argument("writes buffer must be 1-D (3n) or 2-D (n, 3)");
+    }
+
+    // Validate everything and copy before touching the chip state
+    const uint32_t* src = static_cast<const uint32_t*>(info.ptr);
+    std::vector<RegWrite> list(count);
+    uint64_t prevT = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const uint64_t t = src[i * 3];
+        const uint32_t reg = src[i * 3 + 1];
+        const uint32_t value = src[i * 3 + 2];
+        if (t < prevT) {
+            throw std::invalid_argument("write " + std::to_string(i) + ": t must be non-decreasing");
+        }
+        if (t >= static_cast<uint64_t>(tFrame)) {
+            throw std::invalid_argument("write " + std::to_string(i) + ": t must be less than t_frame");
+        }
+        if (reg >= std::size(AY.R)) {
+            throw std::invalid_argument("write " + std::to_string(i) + ": register must be in 0..13");
+        }
+        if (value > 255) {
+            throw std::invalid_argument("write " + std::to_string(i) + ": value must be in 0..255");
+        }
+        prevT = t;
+        // k = ceil(t * samples / t_frame), exact in 64-bit
+        const uint64_t k = (t * static_cast<uint64_t>(samples) + static_cast<uint64_t>(tFrame) - 1)
+                           / static_cast<uint64_t>(tFrame);
+        list[i] = RegWrite {k, static_cast<uint8_t>(reg), static_cast<uint8_t>(value)};
+    }
+
+    const size_t n = static_cast<size_t>(samples);
+    const size_t outCount = stereo ? 2 * n : n;
+    py::bytes result(nullptr, outCount * sizeof(int16_t));
+    char* out = PyBytes_AS_STRING(result.ptr());
+
+    {
+        py::gil_scoped_release release;
+        std::vector<float> left(n), right(n);
+        size_t pos = 0;
+        for (const auto& w : list) {
+            if (w.sample > pos) {
+                AY.processBlock(left.data() + pos, right.data() + pos, w.sample - pos, removeDC);
+                pos = w.sample;
+            }
+            AY.R[w.reg] = w.value;
+        }
+        if (pos < n) {
+            AY.processBlock(left.data() + pos, right.data() + pos, n - pos, removeDC);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            const double l = left[i];
+            const double r = right[i];
+            if (stereo) {
+                putInt16LE(out + 4 * i, toInt16(l));
+                putInt16LE(out + 4 * i + 2, toInt16(r));
+            } else {
+                putInt16LE(out + 2 * i, toInt16((l + r) * 0.5));
+            }
+        }
+    }
+    return result;
+}
 
 
 PYBIND11_MODULE(pyayay, m) {
@@ -204,6 +336,13 @@ PYBIND11_MODULE(pyayay, m) {
             const int stride = 1;
             AY.processBlock(outLeftPtr, outRightPtr, samples, remove_dc, stride);
         }, py::arg("out_left"), py::arg("out_right"), py::arg("samples"), py::arg("remove_dc") = true)
+
+        .def("render_frame", &renderFrame,
+             py::arg("writes"), py::arg("samples"), py::arg("t_frame"),
+             py::arg("stereo") = false, py::arg("remove_dc") = true,
+             "Render one frame to little-endian int16 PCM bytes, applying timed register writes.\n"
+             "writes: uint32 buffer of (t, reg, value) triples, flat (3n) or (n, 3), t non-decreasing.\n"
+             "A write at t is applied before sample ceil(t * samples / t_frame).")
 
         .def("reset", [](AyumiEmulator& AY, int sampleRate, double clock, AYInterface::TypeEnum::Enum type) {
             AY.Reset(sampleRate, clock, type);

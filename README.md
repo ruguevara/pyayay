@@ -126,6 +126,64 @@ fps = 50
 ay.render_psg(data, mask, outLeft, outRight, fps)
 ```
 
+## Rendering a frame with timed register writes
+
+`render_frame(writes, samples, t_frame, stereo=False, remove_dc=True) -> bytes` renders one
+emulated frame and applies register writes at their position inside it. This is meant for
+emulators that record `out` writes to the AY during a frame.
+
+- `writes` is a buffer of unsigned 32-bit ints with `(t, reg, value)` triples: a flat
+  `array('I')` / `numpy.uint32` array of length 3n, or a contiguous `(n, 3)` array. It can be empty.
+  `t` is the T-state offset inside the frame (`0 <= t < t_frame`, non-decreasing), `reg` is 0..13,
+  `value` is 0..255. Anything else raises `ValueError`, and the chip state is left unchanged.
+- A write at `t` is applied right before sample `k = ceil(t * samples / t_frame)` is rendered
+  (integer math), so it lands on the first sample boundary at or after its time. Writes with the
+  same `k` are applied in order. A write with `k == samples` takes effect at the start of the next frame.
+- Writes go through the same path as `ay.R[reg] = value`. A write to R13 always restarts the
+  envelope (counter and segment reset), even if the shape value is the same, as on a real AY.
+- The result is little-endian int16 PCM: `samples` values for mono (`(left + right) / 2`),
+  or `2 * samples` interleaved `L, R` values for stereo. `remove_dc` has the same meaning as in
+  `process_block`.
+
+Example: a 128K frame (70908 T-states) at 50 Hz and 22050 Hz, with the AY clock scaled to
+`70908 * 25 = 1772700` Hz:
+
+```python
+from array import array
+from pyayay import Ayumi
+
+ay = Ayumi(sample_rate=22050, clock=1772700)
+ay.set_master_volume(0.6)
+
+writes = array('I', [
+    #  t      reg  value
+    0,      7,   0b00111110,  # tone A on
+    0,      8,   15,          # volume A
+    0,      0,   100,         # tone A period, low byte
+    35000,  0,   80,          # pitch change in the middle of the frame
+])
+pcm = ay.render_frame(writes, 441, 70908)  # 441 int16 samples = 882 bytes
+```
+
+### Output scaling
+
+Each float sample (after `set_master_volume`) is multiplied by 32767, rounded to nearest and
+clamped to int16. Mono is computed from the float average, so it can differ by one LSB from the
+average of the rounded stereo values.
+
+Ayumi's output is not limited to -1..1. Each channel contributes `dac_level * pan_left` to the left
+output and `dac_level * pan_right` to the right one (max DAC level is 1.0), so the peak is the sum of
+the pan gains plus about 9% overshoot from the decimation filter on sharp steps. Measured with all
+three channels at full volume (AY and YM):
+
+| panning                          | remove_dc=False   | remove_dc=True    |
+|----------------------------------|-------------------|-------------------|
+| default ACB (0.25, 0.75, 0.5)    | -0.18 .. +1.64    | -1.52 .. +1.62    |
+| all channels hard left (0, 0, 0) | -0.36 .. +3.28    | -3.05 .. +3.24    |
+
+With the default panning, `set_master_volume(0.6)` keeps the output inside int16 without clipping.
+Louder settings clip at -32768 / 32767.
+
 For more usage examples see [tests](tests/test_ayumi.py).
 
 ## License

@@ -209,6 +209,10 @@ public:
         }
     {};
 
+    // R accessors must stay bound to their own object, so a copy rebuilds them
+    AYInterface(const AYInterface&) : AYInterface() {}
+    AYInterface& operator=(const AYInterface&) { return *this; }
+
     std::array<RegisterAccessor, 14> R;
 };
 
