@@ -39,7 +39,7 @@ jobs:
           echo "Pinned version: $version"
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.17.0
+        uses: pypa/cibuildwheel@v2.23.4
         env:
           SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.scm.outputs.version }}
           # Forward the pinned version into the Linux manylinux container.
