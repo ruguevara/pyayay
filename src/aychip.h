@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <array>
@@ -209,6 +210,10 @@ public:
         }
     {};
 
+    // R accessors must stay bound to their own object, so a copy rebuilds them
+    AYInterface(const AYInterface&) : AYInterface() {}
+    AYInterface& operator=(const AYInterface&) { return *this; }
+
     std::array<RegisterAccessor, 14> R;
 };
 
@@ -247,6 +252,9 @@ public:
     auto setMasterVolume(float volume) -> void override;
     auto getMasterVolume() const -> float override;
     auto processBlock(float* outLeft, float* outRight, size_t numSamples, bool removeDC = true, size_t stride = 1) -> void override;
+    // Absolute timeline: samples rendered since construction or the last Reset
+    auto getSamplesRendered() const -> uint64_t { return SamplesRendered_; }
+    auto setSamplesRendered(uint64_t samples) -> void { SamplesRendered_ = samples; }
     // TODO
     // * Output to thee separate channels instead of mixing them to stereo panorama
 
@@ -257,6 +265,7 @@ private:
     int SampleRate_;
     double Pan_[TONE_CHANNELS];
     float MasterVolume_;
+    uint64_t SamplesRendered_ = 0;
 };
 
 } // namespace uZX::Chip

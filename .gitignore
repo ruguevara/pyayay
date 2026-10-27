@@ -45,3 +45,7 @@ wheels/
 ehthumbs.db
 Thumbs.db
 CLAUDE.md
+
+# Pyodide build output
+dist-pyodide/
+node_modules/

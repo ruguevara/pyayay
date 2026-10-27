@@ -31,6 +31,7 @@ auto AyumiEmulator::Reset(int sampleRate, double clock, ChipType type) -> void {
     SampleRate_ = sampleRate;
     ClockRate_ = clock;
     Type_ = type;
+    SamplesRendered_ = 0;
     ayumi_configure(&Ayumi_, type, clock, sampleRate);
     for (int i = 0; i < TONE_CHANNELS; ++i) {
         setPan(i, Pan_[i]);
@@ -157,6 +158,7 @@ auto AyumiEmulator::processBlock(float* outLeft, float* outRight, size_t numSamp
         *outLeft = static_cast<float>(Ayumi_.left) * MasterVolume_;
         *outRight = static_cast<float>(Ayumi_.right) * MasterVolume_;
     }
+    SamplesRendered_ += numSamples;
 }
 
 }

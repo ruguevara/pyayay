@@ -1,0 +1,42 @@
+name: Pyodide wheel
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+  release:
+    types:
+      - published
+
+jobs:
+  build_pyodide:
+    name: Build wheel for Pyodide 0.29.3
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build wheel
+        run: make pyodide-wheel
+
+      - name: Install native build for comparison
+        run: python -m pip install -e .
+
+      - name: Smoke test under Pyodide in Node
+        run: make pyodide-smoke
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: pyodide-wheel
+          path: |
+            dist-pyodide/*.whl
+            dist-pyodide/smoke-*.json

@@ -18,7 +18,9 @@ jobs:
       matrix:
         # macos-14 (Apple Silicon) builds a universal2 wheel covering Intel too,
         # so a separate macos-13 (Intel) runner is not needed.
-        os: [ubuntu-latest, windows-latest, macos-14]
+        # ubuntu-24.04, not ubuntu-latest (26.04): on 26.04 the 32-bit manylinux2014_i686
+        # container cannot resolve DNS, so pip fails to fetch build dependencies.
+        os: [ubuntu-24.04, windows-latest, macos-14]
 
     steps:
       - uses: actions/checkout@v5
