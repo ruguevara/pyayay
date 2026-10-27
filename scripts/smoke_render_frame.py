@@ -1,4 +1,4 @@
-"""render_frame smoke test, run both natively and under Pyodide.
+"""render_frame and render smoke test, run both natively and under Pyodide.
 
 Prints JSON; the two outputs must be identical.
 """
@@ -34,10 +34,45 @@ def render(stereo):
     }
 
 
+def render_timeline(stereo):
+    # Absolute uint64 timeline, far from 0, timer writes crossing block ends
+    ay = Ayumi(44100, 1773447)
+    ay.set_master_volume(0.6)
+    ay.samples_rendered = 10**11
+    t0 = ay.cycle_at(ay.samples_rendered)
+    period = 2953
+    writes = [(t0 + 1, 7, 0b00111110), (t0 + 1, 0, 100), (t0 + 1, 8, 15)]
+    writes += [(t0 + t, 8, 15 if (t // period) % 2 else 9) for t in range(period, 3 * 35468, period)]
+    out = array('h', bytes(2 * (882 * 2 if stereo else 882)))
+    view = memoryview(out).cast('B').cast('h', [882, 2]) if stereo else out
+    data = b''
+    i = 0
+    for _ in range(3):
+        end = ay.cycle_at(ay.samples_rendered + 882)
+        j = i
+        while j < len(writes) and writes[j][0] <= end:
+            j += 1
+        ay.render(view, array('Q', [x for w in writes[i:j] for x in w]))
+        data += out.tobytes()
+        i = j
+    values = struct.unpack('<%dh' % (len(data) // 2), data)
+    return {
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest()[:16],
+        "at_100": list(values[100:104]),
+        "min": min(values),
+        "max": max(values),
+        "position": ay.samples_rendered,
+        "cycle_at": ay.cycle_at(ay.samples_rendered),
+    }
+
+
 try:
     Ayumi().render_frame(array('I', [0, 14, 0]), SAMPLES, T_FRAME)
     error = None
 except ValueError as e:
     error = str(e)
 
-print(json.dumps({"mono": render(False), "stereo": render(True), "error": error}, indent=1))
+print(json.dumps({"mono": render(False), "stereo": render(True),
+                  "timeline_mono": render_timeline(False), "timeline_stereo": render_timeline(True),
+                  "error": error}, indent=1))

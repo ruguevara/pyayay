@@ -126,6 +126,54 @@ fps = 50
 ay.render_psg(data, mask, outLeft, outRight, fps)
 ```
 
+## Rendering with timed register writes on an absolute timeline
+
+`render(out, writes=None, remove_dc=True)` renders `len(out)` samples into a buffer you pass in
+and applies register writes at exact positions on a timeline that runs from the creation of the
+chip (or the last `reset`, `set_clock`, `set_sample_rate` or `set_type`).
+
+- `out` is a writable float32 or int16 buffer. Shape `(n,)` gives mono `(left + right) / 2`,
+  shape `(n, 2)` gives interleaved stereo. float32 holds Ayumi's raw values (as `process_block`),
+  int16 holds them scaled as described in [Output scaling](#output-scaling).
+- `writes` is a uint64 buffer of `(t, reg, value)` triples (`array('Q')` or `numpy.uint64`,
+  flat or `(n, 3)`). `t` is the **absolute** time in AY clock cycles, non-decreasing.
+  A write at `t` is applied right before absolute sample `ceil(t * sample_rate / clock)`.
+  The math is exact 64-bit integer math, so the clock must be an integer number of Hz.
+- `ay.samples_rendered` is the timeline position in samples. `render`, `process_block` and
+  `render_psg` all advance it. It can be set, e.g. to seek.
+- `ay.sample_at(t)` is the absolute sample a write at cycle `t` lands on; `ay.cycle_at(s)` is the
+  last cycle that lands at or before sample `s`. A block of `n` samples takes exactly the writes
+  with `t <= ay.cycle_at(ay.samples_rendered + n)`. Writes for an earlier position or past the end
+  of the block raise `ValueError`.
+
+Because positions are absolute, how you cut the render into blocks does not change the output:
+one long block, 50 Hz frames, or blocks of random size give the same samples. Timer effects keep
+their phase across frame boundaries even when a frame is not a whole number of AY cycles
+(1773447 Hz at 44100 Hz is 35468.94 cycles per 882-sample frame).
+
+```python
+import numpy as np
+from pyayay import Ayumi
+
+ay = Ayumi(sample_rate=44100, clock=1773447)
+ay.set_master_volume(0.6)
+setup = [(0, 7, 0b00111110), (0, 0, 100), (0, 8, 15)]
+period = 2953                     # timer effect: toggle the volume every 2953 AY cycles
+timer = [(t, 8, 15 if (t // period) % 2 else 9) for t in range(period, 10 * 35469, period)]
+writes = setup + timer
+
+out = np.zeros(882, dtype=np.int16)
+i = 0
+for frame in range(10):
+    end = ay.cycle_at(ay.samples_rendered + len(out))
+    j = i
+    while j < len(writes) and writes[j][0] <= end:
+        j += 1
+    ay.render(out, np.array(writes[i:j], dtype=np.uint64))
+    i = j
+    # ... use out
+```
+
 ## Rendering a frame with timed register writes
 
 `render_frame(writes, samples, t_frame, stereo=False, remove_dc=True) -> bytes` renders one
